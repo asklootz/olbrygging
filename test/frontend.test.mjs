@@ -23,6 +23,7 @@ async function frontend() {
     setTimeout: () => {},
     clearTimeout: () => {},
     console,
+    URL,
   });
   runInContext(source, context);
   await new Promise(setImmediate);
@@ -77,4 +78,20 @@ test('metadata saves preserve the latest draft, cursor and email selection', asy
   assert.equal(elements['[name=sendEmail]'].checked, true);
   assert.equal(elements['#message-body'].selectionStart, 9);
   assert.equal(elements['#message-body'].selectionEnd, 14);
+});
+
+test('ticket rows show the validated product link and fetched product image', async () => {
+  const { run } = await frontend();
+  run(`state.user = { id: 'nora', name: 'Nora Berg', role: 'employee' };
+    state.users = [{ id: 'emil', name: 'Emil Hansen', role: 'ambassador' }];
+    state.tickets = [{
+      id: 'ticket-1', number: 1001, subject: 'Produktguide', status: 'approved',
+      channel: 'Instagram', dueDate: null, ambassadorId: 'emil', productId: 'demo',
+      productUrl: 'https://www.olbrygging.no/produkt/ekte-produkt',
+      productSnapshot: { name: 'Ekte produkt', image: 'https://cdn.example/produkt.jpg' },
+    }];`);
+  const row = run('ticketTable(state.tickets)');
+  assert.match(row, /href="https:\/\/www\.olbrygging\.no\/produkt\/ekte-produkt"/);
+  assert.match(row, /src="https:\/\/cdn\.example\/produkt\.jpg"/);
+  assert.equal(run("productLink('https://evil.example/product')"), '');
 });

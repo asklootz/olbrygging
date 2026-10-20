@@ -37,7 +37,7 @@ const productLink = (value) => {
 const employee = () => state.user?.role === 'employee';
 const active = (ticket) => !['completed', 'declined'].includes(ticket.status);
 const date = (value, options = { day: 'numeric', month: 'short' }) => value ? new Intl.DateTimeFormat('nb-NO', options).format(new Date(value)) : 'Ingen frist';
-const price = (value) => new Intl.NumberFormat('nb-NO', { maximumFractionDigits: 0 }).format(value);
+const price = (value) => new Intl.NumberFormat('nb-NO', { maximumFractionDigits: 2 }).format(value);
 const avatar = (user, extra = '') => `<span class="avatar ${extra}" aria-hidden="true">${escape(initials(user?.name || '?'))}</span>`;
 const pill = (status) => `<span class="pill ${escape(status)}">${escape(statuses[status] || status)}</span>`;
 const brand = () => '<div class="brand"><span class="brand-mark">ø</span><div><strong>ØLBRYGGING</strong><small>Ambassadørportalen</small></div></div>';
