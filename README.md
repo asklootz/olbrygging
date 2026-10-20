@@ -7,6 +7,8 @@ A Norwegian-language ambassador CRM for Ølbrygging AS. This standalone local de
 - Ambassador-specific collaboration lists and progress tracking.
 - Employee review, approval, assignment, deadlines, and completion.
 - Persistent ticket conversations, email drafts, and optional outbound email notifications.
+- Ambassador profiles, employee task filters, a searchable knowledge base, and product damage reports.
+- Browser-saved display/notification preferences and administrator-only account management.
 - Password authentication and server-side role and ticket access checks.
 - Responsive desktop/mobile layouts and keyboard-accessible dialogs.
 
@@ -26,8 +28,11 @@ Open **http://127.0.0.1:3000**. Use the demo-role buttons or log in with:
 | Employee | `employee@olbrygging.example` | `BrewTogether!2026` |
 | Second ambassador | `sara@olbrygging.example` | `BrewTogether!2026` |
 | Second employee | `marius@olbrygging.example` | `BrewTogether!2026` |
+| Administrator | `admin@olbrygging.example` | `BrewTogether!2026` |
 
 These are public **demo credentials**, not real accounts. All products, prices, people, and conversations are fictional examples, not a live olbrygging.no integration.
+
+Administrators can create employee and ambassador accounts from **Brukeradministrasjon**. New accounts require a temporary password of at least 12 characters. The app does not send invitations or password-reset messages.
 
 ### Try the workflow
 

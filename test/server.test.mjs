@@ -243,3 +243,43 @@ test('concurrent creation preserves all writes with unique ticket numbers', asyn
   assert.equal(new Set(responses.map((response) => response.body.ticket.number)).size, 6);
   assert.equal(JSON.parse(readFileSync(dataFile, 'utf8')).tickets.length, 11);
 });
+
+test('profiles, articles, damage reports, and admin-only account management', async (t) => {
+  const { call, login } = await fixture(t);
+  const ambassador = await login();
+  const employee = await login('employee@olbrygging.example');
+  const admin = await login('admin@olbrygging.example');
+
+  const workspace = (await call('/api/workspace', { cookie: ambassador })).body;
+  assert.equal(workspace.articles.length, 2);
+  assert.deepEqual(workspace.damageReports, []);
+  assert.equal(workspace.users.some((item) => item.role === 'admin'), false);
+
+  assert.equal((await call('/api/articles', { method: 'POST', cookie: ambassador, body: { title: 'Nei', body: 'Nei', category: 'Test' } })).status, 403);
+  assert.equal((await call('/api/users', { cookie: employee })).status, 403);
+  assert.equal((await call('/api/users', { method: 'POST', cookie: employee, body: { name: 'Test', email: 'test@example.test', password: 'long-test-password', role: 'employee' } })).status, 403);
+
+  const article = await call('/api/articles', { method: 'POST', cookie: employee, body: { title: 'Ny bryggeguide', body: 'Oppbevar råvarene kjølig.', category: 'Bryggetips' } });
+  assert.equal(article.status, 201);
+  assert.equal(article.body.article.authorId, 'nora');
+  assert.equal(article.body.article.updatedBy, 'nora');
+  const editedArticle = await call(`/api/articles/${article.body.article.id}`, { method: 'PATCH', cookie: employee, body: { title: 'Oppdatert bryggeguide' } });
+  assert.equal(editedArticle.body.article.title, 'Oppdatert bryggeguide');
+  assert.equal(editedArticle.body.article.authorId, 'nora');
+
+  const report = await call('/api/damage-reports', { method: 'POST', cookie: ambassador, body: { productId: 'fjord-pale', description: 'Esken var skadet ved levering.' } });
+  assert.equal(report.status, 201);
+  assert.equal((await call(`/api/damage-reports/${report.body.report.id}`, { method: 'PATCH', cookie: ambassador, body: { status: 'approved' } })).status, 403);
+  const approved = await call(`/api/damage-reports/${report.body.report.id}`, { method: 'PATCH', cookie: employee, body: { status: 'approved', reviewNote: 'Erstattes.' } });
+  assert.equal(approved.body.report.status, 'approved');
+  assert.equal((await call('/api/workspace', { cookie: ambassador })).body.damageReports[0].reviewNote, 'Erstattes.');
+
+  const created = await call('/api/users', { method: 'POST', cookie: admin, body: { name: 'Ny ambassadør', email: 'new@example.test', password: 'temporary-password', role: 'ambassador' } });
+  assert.equal(created.status, 201);
+  assert.equal(JSON.stringify(created.body).includes('passwordHash'), false);
+  const disabled = await call(`/api/users/${created.body.user.id}`, { method: 'PATCH', cookie: admin, body: { active: false } });
+  assert.equal(disabled.body.user.active, false);
+  assert.equal((await call('/api/login', { method: 'POST', body: { email: 'new@example.test', password: 'temporary-password' } })).status, 401);
+  const profile = await call('/api/users/emil', { method: 'PATCH', cookie: employee, body: { socialMedia: '@emilbrygger' } });
+  assert.equal(profile.body.user.socialMedia, '@emilbrygger');
+});

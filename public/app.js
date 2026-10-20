@@ -1,6 +1,6 @@
 const app = document.querySelector('#app');
 const modalRoot = document.querySelector('#modal-root');
-const state = { user: null, products: [], tickets: [], users: [], page: 'overview', query: '', filter: 'Alle', emailConfigured: false };
+const state = { user: null, products: [], tickets: [], users: [], articles: [], damageReports: [], page: 'overview', query: '', filter: 'Alle', profileId: '', editArticle: null, ownerFilter: 'Alle', emailConfigured: false };
 const statuses = { requested: 'Avventer svar', approved: 'Godkjent', in_progress: 'Pågår', review: 'Til gjennomgang', completed: 'Fullført', declined: 'Avslått' };
 const paths = {
   grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
@@ -21,13 +21,17 @@ const paths = {
   send: '<path d="m22 2-7 20-4-9L2 9 22 2Zm-11 11L22 2"/>',
   help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-1 .5-1 1.2-1 2.2M12 17h.01"/>',
   heart: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0l-1 1-1-1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/>',
+  book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v17H6.5A2.5 2.5 0 0 0 4 22z"/><path d="M4 5.5v14A2.5 2.5 0 0 1 6.5 17H20M8 7h8"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+  warning: '<path d="m12 3 10 18H2L12 3Z"/><path d="M12 9v5m0 3h.01"/>',
+  settings: '<path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"/><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.6a8 8 0 0 1-1.8 1l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.8-1l-1.7.6-1.4-2.4 1.4-1.1a8 8 0 0 1 0-2l-1.4-1.1 1.4-2.4 1.7.6a8 8 0 0 1 1.8-1L13 7h2.8l.3 1.8a8 8 0 0 1 1.8 1l1.7-.6 1.4 2.4-1.4 1.1a8 8 0 0 1-.2 2.3Z"/>',
 };
 const icon = (name) => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.box}</svg>`;
 const escape = (value = '') => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const initials = (name = '') => name.split(' ').map((part) => part[0]).slice(0, 2).join('');
 const person = (id) => state.users.find((user) => user.id === id);
 const product = (id) => state.products.find((item) => item.id === id);
-const employee = () => state.user?.role === 'employee';
+const employee = () => state.user?.role !== 'ambassador';
 const active = (ticket) => !['completed', 'declined'].includes(ticket.status);
 const date = (value, options = { day: 'numeric', month: 'short' }) => value ? new Intl.DateTimeFormat('nb-NO', options).format(new Date(value)) : 'Ingen frist';
 const price = (value) => new Intl.NumberFormat('nb-NO', { maximumFractionDigits: 0 }).format(value);
@@ -86,7 +90,7 @@ function renderLogin(error = '') {
     <section class="login-story">${brand()}<h1>Gode råvarer.<br>Enda bedre<br><em>samarbeid.</em></h1><p>For deg som deler bryggeglede. Velkommen til fellesskapet vårt.</p><div class="login-art">${illustration({ category: 'Ølsett', name: 'Illustrert bryggesett' })}</div><div class="story-foot">${icon('leaf')} Sammen skaper vi bryggeglede · Ølbrygging AS</div></section>
     <section class="login-panel"><div class="login-box"><div class="eyebrow">Laget for bryggeglede</div><h2>Velkommen tilbake.</h2><p>Produktene, samarbeidene og samtalene dine.<br>Alt samlet på ett sted.</p>
     <form id="login-form"><div class="field"><label for="email">E-postadresse</label><input id="email" name="email" type="email" autocomplete="username" placeholder="deg@eksempel.no" required maxlength="254"></div><div class="field"><label for="password">Passord</label><input id="password" name="password" type="password" autocomplete="current-password" placeholder="Ditt passord" required maxlength="128"></div><p class="error" role="alert">${escape(error)}</p><button class="primary" type="submit">Logg inn ${icon('arrow')}</button></form>
-    <div class="demo-box"><label>Ta en titt på portalen</label><p>Prøv med eksempeldata. Ingen ekte bestillinger eller e-poster sendes uten konfigurert e-posttjeneste.</p><div class="demo-actions"><button class="secondary" data-demo="ambassador">${icon('leaf')} Ambassadør</button><button class="secondary" data-demo="employee">${icon('bag')} Ansatt</button></div></div>
+    <div class="demo-box"><label>Ta en titt på portalen</label><p>Prøv med eksempeldata. Ingen ekte bestillinger eller e-poster sendes uten konfigurert e-posttjeneste.</p><div class="demo-actions"><button class="secondary" data-demo="ambassador">${icon('leaf')} Ambassadør</button><button class="secondary" data-demo="employee">${icon('bag')} Ansatt</button><button class="secondary" data-demo="admin">${icon('user')} Admin</button></div></div>
     <p class="login-note">Lokal demonstrasjon · Eksempelprodukter, ikke en live produktkatalog.<br>Bruk kun fiktive opplysninger i demoen.</p></div></section></main>`;
 }
 
@@ -118,26 +122,36 @@ function matchingTickets() {
   const query = state.query.toLocaleLowerCase('nb-NO');
   return state.tickets.filter((ticket) => {
     const text = [ticket.subject, ticket.number, product(ticket.productId)?.name, person(ticket.ambassadorId)?.name].join(' ').toLocaleLowerCase('nb-NO');
-    return text.includes(query) && (state.filter === 'Alle' || ticket.status === state.filter);
+    return text.includes(query) && (state.filter === 'Alle' || ticket.status === state.filter)
+      && (!employee() || state.ownerFilter === 'Alle' || ticket.ambassadorId === state.ownerFilter);
   }).sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
 }
 
 function render() {
   if (!state.user) return renderLogin();
-  const titles = { overview: 'Oversikt', tickets: 'Samarbeid', products: 'Produktkatalog', messages: 'Meldinger' };
-  app.innerHTML = `<div class="shell"><aside class="sidebar">${brand()}<div class="nav-label">DITT ARBEIDSROM</div><nav class="nav" aria-label="Hovedmeny">${[
+  const titles = { overview: 'Oversikt', tickets: 'Oppgaver', products: 'Produktkatalog', messages: 'Meldinger', profiles: 'Ambassadører', knowledge: 'Kunnskapsbase', damage: 'Skademeldinger', settings: 'Innstillinger', admin: 'Brukeradministrasjon' };
+  const links = [
     ['overview', 'grid', 'Oversikt'],
-    ['tickets', 'bag', employee() ? 'Alle samarbeid' : 'Mine samarbeid'],
+    ['tickets', 'bag', employee() ? 'Oppgaver' : 'Mine samarbeid'],
     ['products', 'box', 'Produktkatalog'],
     ['messages', 'chat', 'Meldinger'],
-  ].map(([page, symbol, label]) => `<button data-page="${page}" class="${state.page === page ? 'active' : ''}" ${state.page === page ? 'aria-current="page"' : ''}>${icon(symbol)}<span>${label}</span>${page === 'tickets' ? `<span class="count">${state.tickets.filter(active).length}</span>` : ''}</button>`).join('')}</nav>
+    ['profiles', 'user', employee() ? 'Ambassadører' : 'Min profil'],
+    ['knowledge', 'book', 'Kunnskapsbase'],
+    ['damage', 'warning', 'Skademeldinger'],
+    ['settings', 'settings', 'Innstillinger'],
+    ...(state.user.role === 'admin' ? [['admin', 'user', 'Brukere']] : []),
+  ];
+  app.innerHTML = `<div class="shell"><aside class="sidebar">${brand()}<div class="nav-label">DITT ARBEIDSROM</div><nav class="nav" aria-label="Hovedmeny">${[
+    ...links,
+  ].map(([page, symbol, label]) => `<button data-page="${page}" class="${state.page === page ? 'active' : ''}" ${state.page === page ? 'aria-current="page"' : ''}>${icon(symbol)}<span>${label}</span>${page === 'tickets' ? `<span class="count">${state.tickets.filter(active).length}</span>` : page === 'damage' ? `<span class="count">${state.damageReports.filter((report) => report.status === 'pending').length}</span>` : ''}</button>`).join('')}</nav>
     <div class="sidebar-bottom"><div class="sidebar-note">${icon('leaf')}<h3>Vi brygger bedre sammen.</h3><p>En idé, et spørsmål eller litt inspirasjon? Vi er her for deg.</p><button data-action="help">Slik fungerer portalen ${icon('arrow')}</button></div><div class="side-user">${avatar(state.user)}<div><strong>${escape(state.user.name)}</strong><small>${employee() ? 'Ølbrygging-teamet' : 'Ambassadør'}</small></div><button data-action="logout" title="Logg ut" aria-label="Logg ut">${icon('logout')}</button></div></div></aside>
     <div class="workspace"><header class="topbar"><div class="mobile-brand" aria-label="Ølbrygging">ø</div><div class="breadcrumb">Ambassadørportalen ${icon('chevron')}<span>${titles[state.page]}</span></div><div class="top-tools"><div class="search">${icon('search')}<label class="sr-only" for="global-search">Søk i produkter og samarbeid</label><input id="global-search" type="search" placeholder="Søk i portalen …" value="${escape(state.query)}" maxlength="100"></div><span class="demo-label">Demomodus</span><button class="icon-button" data-action="help" aria-label="Hjelp og informasjon" title="Hjelp">${icon('help')}</button>${avatar(state.user, 'green')}</div></header>
     <main class="main" id="main-content">${pageContent()}</main></div></div>`;
 }
 
 function pageContent() {
-  const content = state.page === 'overview' ? overview() : state.page === 'products' ? catalogue() : state.page === 'messages' ? inbox() : ticketsPage();
+  const pages = { overview, tickets: ticketsPage, products: catalogue, messages: inbox, profiles: profilesPage, knowledge: knowledgePage, damage: damagePage, settings: settingsPage, admin: adminPage };
+  const content = (pages[state.page] || overview)();
   return `${content}<footer class="page-foot"><span>© ${new Date().getFullYear()} Ølbrygging AS · Sammen skaper vi bryggeglede.</span><span>${icon('leaf')} Eksempeldata · Lokal demo</span></footer>`;
 }
 
@@ -183,7 +197,8 @@ function ticketTable(tickets) {
 }
 
 function ticketsPage() {
-  return `${heading(employee() ? 'Alle samarbeid' : 'Mine samarbeid', 'Hold oversikt fra første forespørsel til publisert innhold.', `<button class="primary" data-page="products">${icon('plus')} Nytt samarbeid</button>`)}<div class="filters" aria-label="Filtrer samarbeid">${[['Alle', 'Alle'], ...Object.entries(statuses)].map(([value, label]) => `<button class="filter ${state.filter === value ? 'active' : ''}" data-filter="${value}" aria-pressed="${state.filter === value}">${label}</button>`).join('')}</div><section class="card"><div class="card-head"><h2>Samarbeid <span class="count">${matchingTickets().length}</span></h2><span class="muted small">Sist oppdatert først</span></div>${ticketTable(matchingTickets())}</section>`;
+  const ambassadors = state.users.filter((user) => user.role === 'ambassador' && user.active !== false);
+  return `${heading(employee() ? 'Oppgaver' : 'Mine samarbeid', 'Hold oversikt fra første forespørsel til publisert innhold.', `<button class="primary" data-page="products">${icon('plus')} Nytt samarbeid</button>`)}${employee() ? `<div class="field owner-filter"><label for="owner-filter">Filtrer på ambassadør</label><select id="owner-filter" data-owner-filter><option value="Alle">Alle ambassadører</option>${ambassadors.map((user) => `<option value="${escape(user.id)}" ${state.ownerFilter === user.id ? 'selected' : ''}>${escape(user.name)}</option>`).join('')}</select></div>` : ''}<div class="filters" aria-label="Filtrer samarbeid">${[['Alle', 'Alle'], ...Object.entries(statuses)].map(([value, label]) => `<button class="filter ${state.filter === value ? 'active' : ''}" data-filter="${value}" aria-pressed="${state.filter === value}">${label}</button>`).join('')}</div><section class="card"><div class="card-head"><h2>${employee() ? 'Oppgaver' : 'Samarbeid'} <span class="count">${matchingTickets().length}</span></h2><span class="muted small">Sist oppdatert først</span></div>${ticketTable(matchingTickets())}</section>`;
 }
 
 function catalogue() {
@@ -198,6 +213,51 @@ function inbox() {
     const author = person(last.authorId);
     return `<button class="card inbox-item" data-ticket="${escape(ticket.id)}">${avatar(author, author?.role === 'employee' ? 'green' : '')}<div class="message-preview"><h3>${escape(ticket.subject)} ${pill(ticket.status)}</h3><p>${escape(author?.name)}: ${escape(last.body)}</p></div><small>${date(last.createdAt)}</small>${icon('chevron')}</button>`;
   }).join('') || empty('Ingen samtaler ennå. Åpne et samarbeid for å sende den første meldingen.')}</section>`;
+}
+
+function profilesPage() {
+  const ambassadors = state.users.filter((user) => user.role === 'ambassador');
+  const selectedId = employee() ? state.profileId || ambassadors[0]?.id : state.user.id;
+  const profile = employee() ? ambassadors.find((user) => user.id === selectedId) : state.user;
+  return `${heading(employee() ? 'Ambassadørprofiler' : 'Min profil', employee() ? 'Kontaktinformasjon og kanaler for ambassadørene.' : 'Hold kontaktinformasjonen din oppdatert.')}
+    <section class="card profile-card">${employee() ? `<div class="field"><label for="profile-select">Ambassadør</label><select id="profile-select" data-profile-select>${ambassadors.map((user) => `<option value="${escape(user.id)}" ${user.id === profile?.id ? 'selected' : ''}>${escape(user.name)}</option>`).join('')}</select></div>` : ''}
+    ${profile ? `<form id="profile-form" data-user-id="${escape(profile.id)}"><div class="field"><label for="profile-name">Navn</label><input id="profile-name" name="name" value="${escape(profile.name)}" required maxlength="100"></div><div class="field"><label for="profile-email">E-post</label><input id="profile-email" name="email" type="email" value="${escape(profile.email)}" required maxlength="254"></div><div class="field"><label for="profile-social">Sosiale medier / profil-lenke</label><input id="profile-social" name="socialMedia" value="${escape(profile.socialMedia)}" maxlength="200" placeholder="@brukernavn eller lenke"></div><p class="error" role="alert"></p><button class="primary" type="submit">Lagre profil ${icon('check')}</button></form>` : empty('Ingen ambassadørprofiler er tilgjengelige.')}</section>
+    ${employee() ? `<section class="section-heading"><div><h2>Oppgaver per ambassadør</h2><p>Se samarbeidsstatus og kontaktperson.</p></div></section><section class="card">${ticketTable(state.tickets.filter((ticket) => ticket.ambassadorId === selectedId))}</section>` : ''}`;
+}
+
+function knowledgePage() {
+  const categories = ['Alle', ...new Set(state.articles.map((article) => article.category))];
+  const query = state.query.toLocaleLowerCase('nb-NO');
+  const articles = state.articles.filter((article) => (state.filter === 'Alle' || article.category === state.filter)
+    && `${article.title} ${article.body} ${article.category}`.toLocaleLowerCase('nb-NO').includes(query));
+  const edit = state.editArticle && state.articles.find((article) => article.id === state.editArticle);
+  return `${heading('Kunnskapsbase', 'Bryggetips, retningslinjer og svar samlet på ett sted.', employee() ? `<button class="primary" data-action="new-article">${icon('plus')} Ny artikkel</button>` : '')}
+    <div class="filters" aria-label="Artikkelkategorier">${categories.map((category) => `<button class="filter ${state.filter === category ? 'active' : ''}" data-filter="${escape(category)}" aria-pressed="${state.filter === category}">${escape(category)}</button>`).join('')}</div>
+    ${employee() && state.editArticle !== null ? `<section class="card article-editor"><h2>${edit ? 'Rediger artikkel' : 'Ny artikkel'}</h2><form id="article-form" data-article-id="${escape(edit?.id || '')}"><div class="field"><label for="article-title">Tittel</label><input id="article-title" name="title" value="${escape(edit?.title || '')}" required maxlength="160"></div><div class="field"><label for="article-category">Kategori</label><input id="article-category" name="category" value="${escape(edit?.category || '')}" required maxlength="60"></div><div class="field"><label for="article-body">Innhold</label><textarea id="article-body" name="body" required maxlength="12000">${escape(edit?.body || '')}</textarea></div><p class="error" role="alert"></p><div class="modal-actions"><button class="secondary" type="button" data-action="cancel-article">Avbryt</button><button class="primary" type="submit">Lagre artikkel</button></div></form></section>` : ''}
+    <section class="article-list" aria-label="Artikler">${articles.map((article) => `<article class="card article-card"><div class="category">${escape(article.category)}</div><h2>${escape(article.title)}</h2><p>${escape(article.body)}</p><small>Skrevet av ${escape(person(article.authorId)?.name || 'Ølbrygging-teamet')} · Sist endret av ${escape(person(article.updatedBy || article.authorId)?.name || 'Ølbrygging-teamet')} ${date(article.updatedAt, { day: 'numeric', month: 'short', year: 'numeric' })}</small>${employee() ? `<button class="text-button" data-article-edit="${escape(article.id)}">Rediger ${icon('arrow')}</button>` : ''}</article>`).join('') || empty('Ingen artikler i denne kategorien ennå.')}</section>`;
+}
+
+function damagePage() {
+  const reports = state.damageReports;
+  const labels = { pending: 'Til behandling', approved: 'Godkjent', rejected: 'Avslått' };
+  return `${heading('Skademeldinger', employee() ? 'Gjennomgå meldinger om varer fra ambassadørfellesskapet.' : 'Meld fra dersom en vare du mottok er skadet.')}
+    ${employee() ? '' : `<section class="card damage-form-card"><h2>Registrer en skade</h2><form id="damage-form"><div class="field"><label for="damage-product">Produkt</label><select id="damage-product" name="productId"><option value="">Ikke knyttet til et produkt</option>${state.products.map((item) => `<option value="${escape(item.id)}">${escape(item.name)}</option>`).join('')}</select></div><div class="field"><label for="damage-ticket">Samarbeid (valgfritt)</label><select id="damage-ticket" name="ticketId"><option value="">Velg samarbeid</option>${state.tickets.map((ticket) => `<option value="${escape(ticket.id)}">${escape(ticket.subject)}</option>`).join('')}</select></div><div class="field"><label for="damage-description">Beskriv skaden</label><textarea id="damage-description" name="description" required maxlength="5000" placeholder="Hva er skadet, og når oppdaget du det?"></textarea></div><p class="error" role="alert"></p><button class="primary" type="submit">Send skademelding ${icon('arrow')}</button></form></section>`}
+    <section class="damage-list">${reports.map((report) => `<article class="card damage-card"><div class="category">${labels[report.status] || report.status}</div><h2>${escape(product(report.productId)?.name || 'Produkt ikke oppgitt')}</h2><p>${escape(report.description)}</p><small>${escape(person(report.ambassadorId)?.name || 'Ambassadør')} · ${date(report.createdAt, { day: 'numeric', month: 'long', year: 'numeric' })}${report.reviewNote ? ` · ${escape(report.reviewNote)}` : ''}</small>${employee() && report.status === 'pending' ? `<div class="modal-actions"><button class="secondary" data-report-decision="rejected" data-report-id="${escape(report.id)}">Avslå</button><button class="primary" data-report-decision="approved" data-report-id="${escape(report.id)}">Godkjenn</button></div>` : ''}</article>`).join('') || empty('Ingen skademeldinger ennå.')}</section>`;
+}
+
+function settingsPage() {
+  let settings = { theme: 'light', compact: false, notifications: true };
+  try { settings = { ...settings, ...JSON.parse(localStorage.getItem(`settings-${state.user.id}`) || '{}') }; } catch {}
+  document.documentElement.dataset.theme = settings.theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.classList.toggle('compact', Boolean(settings.compact));
+  return `${heading('Innstillinger', 'Tilpass visningen og varslene dine.')}<section class="card settings-card"><form id="settings-form"><div class="field"><label for="setting-theme">Tema</label><select id="setting-theme" name="theme"><option value="light" ${settings.theme === 'light' ? 'selected' : ''}>Lyst</option><option value="dark" ${settings.theme === 'dark' ? 'selected' : ''}>Mørkt</option></select></div><label class="check-label"><input name="compact" type="checkbox" ${settings.compact ? 'checked' : ''}> Kompakt visning</label><label class="check-label"><input name="notifications" type="checkbox" ${settings.notifications ? 'checked' : ''}> Vis varsler om nye meldinger</label><p class="small muted">Innstillingene lagres i denne nettleseren.</p><button class="primary" type="submit">Lagre innstillinger ${icon('check')}</button></form></section>`;
+}
+
+function adminPage() {
+  if (state.user.role !== 'admin') return empty('Denne siden er bare tilgjengelig for administrator.');
+  return `${heading('Brukeradministrasjon', 'Opprett kontoer og administrer tilgang for ansatte og ambassadører.')}
+    <section class="card admin-create"><h2>Opprett bruker</h2><form id="admin-create-form"><div class="field"><label for="new-name">Navn</label><input id="new-name" name="name" required maxlength="100"></div><div class="field"><label for="new-email">E-post</label><input id="new-email" name="email" type="email" required maxlength="254"></div><div class="form-row"><div class="field"><label for="new-role">Rolle</label><select id="new-role" name="role"><option value="ambassador">Ambassadør</option><option value="employee">Ansatt</option></select></div><div class="field"><label for="new-password">Midlertidig passord</label><input id="new-password" name="password" type="password" required minlength="12" maxlength="128"></div></div><p class="error" role="alert"></p><button class="primary" type="submit">Opprett konto ${icon('plus')}</button></form></section>
+    <section class="admin-users" aria-label="Brukere">${state.users.map((user) => `<article class="card admin-user"><h2>${escape(user.name)} <span class="pill ${user.active ? 'approved' : 'declined'}">${user.active ? 'Aktiv' : 'Deaktivert'}</span></h2><form class="admin-user-form" data-user-id="${escape(user.id)}"><div class="field"><label for="role-${escape(user.id)}">Rolle</label><select id="role-${escape(user.id)}" name="role" ${user.id === state.user.id ? 'disabled' : ''}><option value="ambassador" ${user.role === 'ambassador' ? 'selected' : ''}>Ambassadør</option><option value="employee" ${user.role === 'employee' ? 'selected' : ''}>Ansatt</option>${user.role === 'admin' ? '<option value="admin" selected>Administrator</option>' : ''}</select></div><label class="check-label"><input name="active" type="checkbox" ${user.active ? 'checked' : ''} ${user.id === state.user.id ? 'disabled' : ''}> Aktiv konto</label><button class="secondary" type="submit" ${user.id === state.user.id ? 'disabled' : ''}>Lagre tilgang</button></form></article>`).join('')}</section>`;
 }
 
 function showModal(content, drawer = false) {
@@ -286,6 +346,26 @@ document.addEventListener('click', async (event) => {
   }
   if (button.dataset.product) return requestProduct(button.dataset.product);
   if (button.dataset.ticket) return ticketDetail(button.dataset.ticket);
+  if (button.dataset.articleEdit) {
+    state.editArticle = button.dataset.articleEdit;
+    return navigate('knowledge');
+  }
+  if (button.dataset.action === 'new-article') {
+    state.editArticle = '';
+    return render();
+  }
+  if (button.dataset.action === 'cancel-article') {
+    state.editArticle = null;
+    return render();
+  }
+  if (button.dataset.reportDecision) {
+    try {
+      await api(`/damage-reports/${encodeURIComponent(button.dataset.reportId)}`, { method: 'PATCH', body: { status: button.dataset.reportDecision } });
+      await loadWorkspace();
+      toast('Skademeldingen er behandlet.');
+    } catch (error) { toast(error.message); }
+    return;
+  }
   if (button.dataset.action === 'close') return closeModal();
   if (button.dataset.action === 'help') return help();
   if (button.dataset.action === 'contact') {
@@ -307,14 +387,22 @@ document.addEventListener('click', async (event) => {
 
 document.addEventListener('submit', async (event) => {
   const form = event.target;
-  if (!['login-form', 'request-form', 'message-form'].includes(form.id)) return;
+  if (!['login-form', 'request-form', 'message-form', 'profile-form', 'article-form', 'damage-form', 'admin-create-form', 'settings-form'].includes(form.id) && !form.matches('.admin-user-form')) return;
   event.preventDefault();
   const fields = new FormData(form);
   const button = form.querySelector('[type=submit]');
   if (form.id === 'login-form') return login(fields.get('email'), fields.get('password'), button);
+  if (form.id === 'settings-form') {
+    const settings = { theme: fields.get('theme'), compact: fields.has('compact'), notifications: fields.has('notifications') };
+    localStorage.setItem(`settings-${state.user.id}`, JSON.stringify(settings));
+    render();
+    toast('Innstillingene er lagret.');
+    return;
+  }
   mutating = true;
   button.disabled = true;
-  form.querySelector('.error').textContent = '';
+  const error = form.querySelector('.error');
+  if (error) error.textContent = '';
   try {
     if (form.id === 'request-form') {
       const body = { ...Object.fromEntries(fields), productId: form.dataset.productId };
@@ -322,16 +410,46 @@ document.addEventListener('submit', async (event) => {
       await loadWorkspace();
       ticketDetail(ticket.id);
       toast('Forespørselen er sendt. Nå begynner et godt samarbeid!');
-    } else {
+    } else if (form.id === 'message-form') {
       const { message } = await api(`/tickets/${encodeURIComponent(form.dataset.ticketId)}/messages`, { method: 'POST', body: { body: fields.get('body'), sendEmail: fields.has('sendEmail') } });
       await loadWorkspace();
       ticketDetail(form.dataset.ticketId);
       modalRoot.querySelector('.drawer-scroll').scrollTop = modalRoot.querySelector('.drawer-scroll').scrollHeight;
       modalRoot.querySelector('#message-body').focus();
       if (message.emailStatus === 'failed') toast('Meldingen er lagret, men e-postvarslingen kunne ikke sendes.');
+    } else if (form.id === 'profile-form') {
+      const body = Object.fromEntries(fields);
+      const path = employee() ? `/users/${encodeURIComponent(form.dataset.userId)}` : '/profile';
+      await api(path, { method: 'PATCH', body });
+      await loadWorkspace();
+      toast('Profilen er oppdatert.');
+    } else if (form.id === 'article-form') {
+      const path = form.dataset.articleId ? `/articles/${encodeURIComponent(form.dataset.articleId)}` : '/articles';
+      await api(path, { method: form.dataset.articleId ? 'PATCH' : 'POST', body: Object.fromEntries(fields) });
+      state.editArticle = null;
+      await loadWorkspace();
+      toast('Artikkelen er lagret.');
+    } else if (form.id === 'damage-form') {
+      const body = Object.fromEntries(fields);
+      if (!body.productId && body.ticketId) body.productId = state.tickets.find((ticket) => ticket.id === body.ticketId)?.productId || '';
+      if (!body.productId) delete body.productId;
+      if (!body.ticketId) delete body.ticketId;
+      await api('/damage-reports', { method: 'POST', body });
+      await loadWorkspace();
+      toast('Skademeldingen er sendt.');
+    } else if (form.id === 'admin-create-form') {
+      await api('/users', { method: 'POST', body: Object.fromEntries(fields) });
+      await loadWorkspace();
+      toast('Brukeren er opprettet.');
+    } else {
+      const body = { active: fields.has('active') };
+      if (fields.has('role')) body.role = fields.get('role');
+      await api(`/users/${encodeURIComponent(form.dataset.userId)}`, { method: 'PATCH', body });
+      await loadWorkspace();
+      toast('Brukertilgangen er oppdatert.');
     }
   } catch (error) {
-    if (form.isConnected) form.querySelector('.error').textContent = error.message;
+    if (form.isConnected && form.querySelector('.error')) form.querySelector('.error').textContent = error.message;
     else toast(error.message);
   } finally {
     mutating = false;
@@ -347,6 +465,14 @@ document.addEventListener('input', (event) => {
 
 document.addEventListener('change', async (event) => {
   const field = event.target;
+  if (field.matches?.('[data-profile-select]')) {
+    state.profileId = field.value;
+    return document.querySelector('#main-content').innerHTML = pageContent();
+  }
+  if (field.matches?.('[data-owner-filter]')) {
+    state.ownerFilter = field.value;
+    return document.querySelector('#main-content').innerHTML = pageContent();
+  }
   if (!field.dataset.update || !modalTicketId) return;
   const id = modalTicketId;
   const version = authVersion;
@@ -411,7 +537,8 @@ setInterval(async () => {
   const version = authVersion;
   try {
     const data = await api('/workspace');
-    if (version !== authVersion || !state.user || data.user.id !== state.user.id || mutating || JSON.stringify(data.tickets) === JSON.stringify(state.tickets)) return;
+    if (version !== authVersion || !state.user || data.user.id !== state.user.id || mutating
+      || ['tickets', 'articles', 'damageReports', 'users', 'products'].every((key) => JSON.stringify(data[key]) === JSON.stringify(state[key]))) return;
     const focused = document.activeElement;
     if (modalTicketId && focused?.matches('select,input')) return;
     const id = modalTicketId;

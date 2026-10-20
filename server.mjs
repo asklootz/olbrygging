@@ -10,7 +10,9 @@ const CHANNELS = ['Instagram', 'TikTok', 'YouTube', 'Blogg', 'Annet'];
 const COOKIE = 'olbrygging_session';
 const SESSION_MS = 1000 * 60 * 60 * 12;
 const MAX_BODY = 24 * 1024;
-const safeUser = ({ id, name, email, role }) => ({ id, name, email, role });
+const safeUser = ({ id, name, email, role, active, socialMedia }) => ({
+  id, name, email, role, active: active !== false, socialMedia: socialMedia || '',
+});
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 
 function passwordHash(password, salt = randomBytes(16).toString('hex')) {
@@ -28,9 +30,10 @@ function seed() {
   const now = new Date();
   const at = (days) => new Date(now.getTime() + days * 86400000).toISOString();
   const user = (id, name, email, role) => ({
-    id, name, email, role, passwordHash: passwordHash('BrewTogether!2026'),
+    id, name, email, role, active: true, socialMedia: '', passwordHash: passwordHash('BrewTogether!2026'),
   });
   const users = [
+    user('carsten', 'Carsten', 'admin@olbrygging.example', 'admin'),
     user('nora', 'Nora Berg', 'employee@olbrygging.example', 'employee'),
     user('marius', 'Marius Dahl', 'marius@olbrygging.example', 'employee'),
     user('emil', 'Emil Hansen', 'ambassador@olbrygging.example', 'ambassador'),
@@ -55,7 +58,12 @@ function seed() {
     })),
   });
   return {
-    version: 1, users, products,
+    version: 2, users, products,
+    articles: [
+      { id: 'article-1', title: 'Slik merker du reklameinnhold', category: 'Innhold', body: 'Merk samarbeid tydelig som reklame eller annonse. Plasser merkingen slik at den er synlig før følgeren åpner eller leser innholdet.', authorId: 'nora', createdAt: at(-20), updatedAt: at(-2) },
+      { id: 'article-2', title: 'Ta vare på humle og malt', category: 'Bryggetips', body: 'Oppbevar råvarer tørt, kjølig og lufttett. Humle holder best på aromaen når den skjermes fra lys og oksygen.', authorId: 'marius', createdAt: at(-12), updatedAt: at(-3) },
+    ],
+    damageReports: [],
     tickets: [
       ticket('ticket-1001', 1001, 'Fra korn til glass – en liten bryggereise', 'Jeg vil lage en varm og ærlig bildeserie om mitt første brygg med Fjordglød. Demoforespørsel.', 'fjord-pale', 'in_progress', 'Instagram', [
         ['emil', 'Hei Nora! Jeg tenker tre innlegg: bryggedagen, gjæringen og den første smaken. Hva tror du?'],
@@ -149,9 +157,14 @@ export function createApp(options = {}) {
   let state;
   if (existsSync(dataFile)) {
     state = JSON.parse(readFileSync(dataFile, 'utf8'));
-    if (state.version !== 1 || !['users', 'products', 'tickets'].every((key) => Array.isArray(state[key]))) {
+    if (![1, 2].includes(state.version) || !['users', 'products', 'tickets'].every((key) => Array.isArray(state[key]))) {
       throw new Error('Unsupported workspace data format.');
     }
+    state.articles ??= [];
+    state.damageReports ??= [];
+    state.users = state.users.map((user) => ({ active: true, socialMedia: '', ...user }));
+    state.version = 2;
+    persist(state);
   } else {
     state = seed();
     persist(state);
@@ -176,7 +189,8 @@ export function createApp(options = {}) {
       sessions.delete(key);
       return null;
     }
-    return state.users.find((user) => user.id === session.userId) ?? null;
+    const user = state.users.find((item) => item.id === session.userId);
+    return user?.active === false ? null : user ?? null;
   };
   const cookieValue = (token, age) => `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${age}${secureCookies ? '; Secure' : ''}`;
   const authorizedTicket = (id, user) => {
@@ -186,14 +200,31 @@ export function createApp(options = {}) {
     }
     return ticket;
   };
+  const updateProfile = (user, body, allowed = ['name', 'email', 'socialMedia']) => {
+    checkFields(body, allowed);
+    if (!Object.keys(body).length) throw new ApiError(400, 'Ingen endringer er oppgitt.');
+    const updated = { ...user };
+    if (body.name !== undefined) updated.name = text(body.name, 'Navn', 100);
+    if (body.email !== undefined) {
+      updated.email = text(body.email, 'E-post', 254).toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(updated.email)) throw new ApiError(400, 'Oppgi en gyldig e-postadresse.');
+      if (state.users.some((item) => item.id !== user.id && item.email.toLowerCase() === updated.email)) throw new ApiError(409, 'E-postadressen er allerede i bruk.');
+    }
+    if (body.socialMedia !== undefined) updated.socialMedia = text(body.socialMedia, 'Sosiale medier', 200, { optional: true, min: 0 }) || '';
+    return updated;
+  };
 
   async function api(req, res, pathname) {
     const method = req.method;
-    const known = ['/api/session', '/api/login', '/api/logout', '/api/workspace', '/api/tickets'].includes(pathname)
-      || /^\/api\/tickets\/[a-zA-Z0-9_-]{1,100}(?:\/messages)?$/.test(pathname);
+    const known = ['/api/session', '/api/login', '/api/logout', '/api/workspace', '/api/tickets', '/api/articles', '/api/damage-reports', '/api/profile', '/api/users'].includes(pathname)
+      || /^\/api\/tickets\/[a-zA-Z0-9_-]{1,100}(?:\/messages)?$/.test(pathname)
+      || /^\/api\/(articles|damage-reports|users)\/[a-zA-Z0-9_-]{1,100}$/.test(pathname);
     if (!known) throw new ApiError(404, 'Ukjent API-endepunkt.');
     const allowed = pathname === '/api/session' || pathname === '/api/workspace' ? ['GET']
-      : /^\/api\/tickets\/[^/]+$/.test(pathname) ? ['PATCH'] : ['POST'];
+      : pathname === '/api/articles' ? ['GET', 'POST']
+      : pathname === '/api/users' ? ['GET', 'POST']
+        : pathname === '/api/damage-reports' || pathname === '/api/login' || pathname === '/api/logout' ? ['POST']
+        : pathname === '/api/profile' || /^\/api\/tickets\/[^/]+$/.test(pathname) || /^\/api\/(articles|damage-reports|users)\/[^/]+$/.test(pathname) ? ['PATCH'] : ['POST'];
     if (!allowed.includes(method)) {
       res.setHeader('Allow', allowed.join(', '));
       throw new ApiError(405, 'Metoden er ikke tillatt.');
@@ -218,7 +249,7 @@ export function createApp(options = {}) {
       const found = state.users.find((item) => item.email.toLowerCase() === email);
       // Do password work for unknown accounts too, without disclosing whether an email exists.
       const match = validPassword(password, found?.passwordHash ?? state.users[0].passwordHash);
-      if (!found || !match) {
+      if (!found || found.active === false || !match) {
         attempts.set(key, { count: attempt && attempt.until > Date.now() ? attempt.count + 1 : 1, until: Date.now() + 900000 });
         if (attempts.size > 5000) {
           for (const [id, value] of attempts) if (value.until <= Date.now()) attempts.delete(id);
@@ -241,7 +272,8 @@ export function createApp(options = {}) {
       return json(res, 200, { user: null });
     }
     if (pathname === '/api/workspace') {
-      const tickets = state.tickets.filter((ticket) => user.role === 'employee' || ticket.ambassadorId === user.id);
+      const tickets = state.tickets.filter((ticket) => user.role !== 'ambassador' || ticket.ambassadorId === user.id);
+      const staff = user.role !== 'ambassador';
       const relevant = new Set([user.id, ...state.users.filter((item) => item.role === 'employee').map((item) => item.id)]);
       for (const ticket of tickets) {
         relevant.add(ticket.ambassadorId);
@@ -250,18 +282,125 @@ export function createApp(options = {}) {
       }
       return json(res, 200, {
         user: safeUser(user), products: state.products, tickets,
-        users: state.users.filter((item) => user.role === 'employee' || relevant.has(item.id)).map(safeUser),
+        users: state.users.filter((item) => user.role === 'admin' || item.role === 'employee' || staff && item.role === 'ambassador' || relevant.has(item.id)).map(safeUser),
+        articles: state.articles,
+        damageReports: state.damageReports.filter((item) => staff || item.ambassadorId === user.id),
         emailConfigured,
       });
     }
+    if (pathname === '/api/articles' && method === 'GET') return json(res, 200, { articles: state.articles });
+    if (pathname === '/api/users' && method === 'GET') {
+      if (user.role !== 'admin') throw new ApiError(403, 'Bare administratorer kan administrere brukere.');
+      return json(res, 200, { users: state.users.map(safeUser) });
+    }
+    if (pathname === '/api/profile') {
+      const body = await readBody(req);
+      const updated = updateProfile(user, body);
+      commit({ ...state, users: state.users.map((item) => item.id === user.id ? updated : item) });
+      return json(res, 200, { user: safeUser(updated) });
+    }
     const body = await readBody(req);
+    if (pathname === '/api/users') {
+      if (user.role !== 'admin') throw new ApiError(403, 'Bare administratorer kan administrere brukere.');
+      checkFields(body, ['name', 'email', 'password', 'role']);
+      const name = text(body.name, 'Navn', 100);
+      const email = text(body.email, 'E-post', 254).toLowerCase();
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new ApiError(400, 'Oppgi en gyldig e-postadresse.');
+      if (state.users.some((item) => item.email.toLowerCase() === email)) throw new ApiError(409, 'E-postadressen er allerede i bruk.');
+      const password = text(body.password, 'Passord', 128, { min: 12 });
+      if (!['employee', 'ambassador'].includes(body.role)) throw new ApiError(400, 'Velg ansatt eller ambassadør.');
+      const created = { id: randomUUID(), name, email, role: body.role, active: true, socialMedia: '', passwordHash: passwordHash(password) };
+      commit({ ...state, users: [...state.users, created] });
+      return json(res, 201, { user: safeUser(created) });
+    }
+    if (/^\/api\/users\/[^/]+$/.test(pathname)) {
+      if (!['admin', 'employee'].includes(user.role)) throw new ApiError(403, 'Du har ikke tilgang til å endre profiler.');
+      const id = pathname.split('/')[3];
+      const target = state.users.find((item) => item.id === id);
+      if (!target || (user.role === 'employee' && target.role !== 'ambassador')) throw new ApiError(404, 'Fant ikke profilen.');
+      const allowedFields = user.role === 'admin' ? ['name', 'email', 'socialMedia', 'role', 'active'] : ['name', 'email', 'socialMedia'];
+      checkFields(body, allowedFields);
+      const profileFields = Object.fromEntries(Object.entries(body).filter(([field]) => ['name', 'email', 'socialMedia'].includes(field)));
+      const profile = Object.keys(profileFields).length ? updateProfile(target, profileFields) : { ...target };
+      if (body.role !== undefined) {
+        if (!['employee', 'ambassador'].includes(body.role)) throw new ApiError(400, 'Velg ansatt eller ambassadør.');
+        profile.role = body.role;
+      }
+      if (body.active !== undefined) {
+        if (typeof body.active !== 'boolean') throw new ApiError(400, 'Aktiv-status må være ja eller nei.');
+        if (target.id === user.id && !body.active) throw new ApiError(400, 'Du kan ikke deaktivere din egen konto.');
+        profile.active = body.active;
+      }
+      if (target.id === user.id && body.role !== undefined && body.role !== target.role) throw new ApiError(400, 'Du kan ikke endre din egen administratorrolle.');
+      commit({ ...state, users: state.users.map((item) => item.id === id ? profile : item) });
+      if (profile.active === false) {
+        for (const [key, session] of sessions) if (session.userId === id) sessions.delete(key);
+      }
+      return json(res, 200, { user: safeUser(profile) });
+    }
+    if (pathname === '/api/articles') {
+      if (user.role === 'ambassador') throw new ApiError(403, 'Bare ansatte kan publisere artikler.');
+      checkFields(body, ['title', 'body', 'category']);
+      const article = {
+        id: randomUUID(), title: text(body.title, 'Tittel', 160),
+        body: text(body.body, 'Innhold', 12000), category: text(body.category, 'Kategori', 60),
+        authorId: user.id, updatedBy: user.id, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      };
+      commit({ ...state, articles: [...state.articles, article] });
+      return json(res, 201, { article });
+    }
+    if (/^\/api\/articles\/[^/]+$/.test(pathname)) {
+      if (user.role === 'ambassador') throw new ApiError(403, 'Bare ansatte kan redigere artikler.');
+      const id = pathname.split('/')[3];
+      const article = state.articles.find((item) => item.id === id);
+      if (!article) throw new ApiError(404, 'Fant ikke artikkelen.');
+      checkFields(body, ['title', 'body', 'category']);
+      if (!Object.keys(body).length) throw new ApiError(400, 'Ingen endringer er oppgitt.');
+      const updated = { ...article };
+      if (body.title !== undefined) updated.title = text(body.title, 'Tittel', 160);
+      if (body.body !== undefined) updated.body = text(body.body, 'Innhold', 12000);
+      if (body.category !== undefined) updated.category = text(body.category, 'Kategori', 60);
+      updated.updatedBy = user.id;
+      updated.updatedAt = new Date().toISOString();
+      commit({ ...state, articles: state.articles.map((item) => item.id === id ? updated : item) });
+      return json(res, 200, { article: updated });
+    }
+    if (pathname === '/api/damage-reports') {
+      if (user.role !== 'ambassador') throw new ApiError(403, 'Skademeldinger kan bare opprettes av ambassadører.');
+      checkFields(body, ['productId', 'description', 'ticketId']);
+      const productId = body.productId === undefined ? null : text(body.productId, 'Produkt', 100);
+      if (productId && !state.products.some((item) => item.id === productId)) throw new ApiError(400, 'Velg et gyldig produkt.');
+      const ticketId = body.ticketId === undefined || body.ticketId === '' ? null : text(body.ticketId, 'Samarbeid', 100);
+      if (ticketId && authorizedTicket(ticketId, user).productId !== productId) throw new ApiError(400, 'Produktet må stemme med samarbeidet.');
+      const report = {
+        id: randomUUID(), ambassadorId: user.id, productId, ticketId,
+        description: text(body.description, 'Beskrivelse', 5000), status: 'pending',
+        createdAt: new Date().toISOString(), reviewedBy: null, reviewNote: '',
+      };
+      commit({ ...state, damageReports: [...state.damageReports, report] });
+      return json(res, 201, { report });
+    }
+    if (/^\/api\/damage-reports\/[^/]+$/.test(pathname)) {
+      if (!['admin', 'employee'].includes(user.role)) throw new ApiError(403, 'Bare ansatte kan behandle skademeldinger.');
+      const id = pathname.split('/')[3];
+      const report = state.damageReports.find((item) => item.id === id);
+      if (!report) throw new ApiError(404, 'Fant ikke skademeldingen.');
+      checkFields(body, ['status', 'reviewNote']);
+      if (!['approved', 'rejected'].includes(body.status)) throw new ApiError(400, 'Velg godkjent eller avslått.');
+      const updated = {
+        ...report, status: body.status, reviewedBy: user.id,
+        reviewNote: body.reviewNote === undefined ? report.reviewNote : text(body.reviewNote, 'Kommentar', 1000, { optional: true, min: 0 }) || '',
+      };
+      commit({ ...state, damageReports: state.damageReports.map((item) => item.id === id ? updated : item) });
+      return json(res, 200, { report: updated });
+    }
     if (pathname === '/api/tickets') {
       checkFields(body, ['productId', 'subject', 'description', 'channel', 'dueDate', 'ambassadorId']);
       const productId = text(body.productId, 'Produkt', 100);
       const product = state.products.find((item) => item.id === productId && item.available);
       if (!product) throw new ApiError(400, 'Velg et tilgjengelig produkt.');
       let ambassadorId = user.id;
-      if (user.role === 'employee') {
+      if (user.role !== 'ambassador') {
         ambassadorId = text(body.ambassadorId, 'Ambassadør', 100);
         if (!state.users.some((item) => item.id === ambassadorId && item.role === 'ambassador')) throw new ApiError(400, 'Velg en gyldig ambassadør.');
       } else if (body.ambassadorId !== undefined && body.ambassadorId !== user.id) {
@@ -287,7 +426,7 @@ export function createApp(options = {}) {
     if (method === 'PATCH') {
       checkFields(body, ['status', 'assigneeId', 'dueDate']);
       if (!Object.keys(body).length) throw new ApiError(400, 'Ingen endringer er oppgitt.');
-      if (user.role !== 'employee') {
+      if (user.role === 'ambassador') {
         const transitions = { approved: 'in_progress', in_progress: 'review' };
         if (body.assigneeId !== undefined || body.dueDate !== undefined || !body.status || transitions[ticket.status] !== body.status) {
           throw new ApiError(403, 'Du kan bare starte en godkjent oppgave eller sende en pågående oppgave til vurdering.');
