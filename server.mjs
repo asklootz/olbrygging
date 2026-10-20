@@ -165,12 +165,16 @@ function productFromHtml(html, url) {
   const imageValue = Array.isArray(product.image) ? product.image[0] : product.image;
   const image = metadata.get('og:image') || metadata.get('twitter:image') || (typeof imageValue === 'string' ? imageValue : imageValue?.url);
   let imageUrl = null;
-  try {
-    const parsedImage = new URL(image, url);
-    if (parsedImage.protocol === 'https:' && !parsedImage.username && !parsedImage.password) imageUrl = parsedImage.href;
-  } catch { /* An invalid or absent image is optional. */ }
-  const priceValue = metadata.get('product:price:amount') || offer.price || offer.lowPrice;
-  const numericPrice = Number(String(priceValue ?? '').replace(',', '.'));
+  if (typeof image === 'string' && image.trim()) {
+    try {
+      const parsedImage = new URL(image, url);
+      if (parsedImage.protocol === 'https:' && !parsedImage.username && !parsedImage.password) imageUrl = parsedImage.href;
+    } catch { /* An invalid or absent image is optional. */ }
+  }
+  const priceValue = [metadata.get('product:price:amount'), offer.price, offer.lowPrice]
+    .find((value) => value !== undefined && value !== null && String(value).trim() !== '');
+  const normalizedPrice = String(priceValue ?? '').trim().replace(',', '.');
+  const numericPrice = normalizedPrice ? Number(normalizedPrice) : NaN;
   const titleTag = html.match(/<title\b[^>]*>([\s\S]*?)<\/title\s*>/i)?.[1];
   const name = product.name || metadata.get('og:title') || metadata.get('twitter:title') || titleTag;
   if (!name) throw new ApiError(422, 'Fant ikke produktinformasjon på siden. Kontroller at lenken peker til et produkt.');
@@ -398,11 +402,11 @@ export function createApp(options = {}) {
       const dueDate = body.dueDate === undefined ? null : dateValue(body.dueDate);
       const assigneeId = state.users.find((item) => item.role === 'employee')?.id;
       if (!assigneeId) throw new ApiError(409, 'Ingen medarbeider er tilgjengelig.');
-      const productSnapshot = body.productUrl === undefined ? null : await readProductPage(body.productUrl);
+      const productSnapshot = await readProductPage(body.productUrl);
       const now = new Date().toISOString();
       const ticket = {
         id: randomUUID(), number: Math.max(1000, ...state.tickets.map((item) => item.number)) + 1,
-        subject, description, productId, productUrl: productSnapshot?.url ?? null, productSnapshot,
+        subject, description, productId, productUrl: productSnapshot.url, productSnapshot,
         ambassadorId, assigneeId, status: 'requested', channel: body.channel,
         dueDate, createdAt: now, updatedAt: now, messages: [],
       };

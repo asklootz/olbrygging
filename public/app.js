@@ -202,7 +202,11 @@ function ticketTable(tickets) {
     const item = ticketProduct(ticket);
     const href = productLink(ticket.productUrl);
     const name = item?.name || ticket.subject;
-    return `<tr data-ticket="${escape(ticket.id)}"><td><div class="ticket-cell"><div class="mini-product">${productVisual(item, index)}</div><div><strong>${href ? `<a class="product-title-link" href="${escape(href)}" target="_blank" rel="noopener noreferrer">${escape(name)}</a>` : escape(name)}</strong><small>#${escape(ticket.number)} · ${employee() ? escape(person(ticket.ambassadorId)?.name) : escape(ticket.channel)}</small></div></div></td><td>${pill(ticket.status)}</td><td class="due due-column">${date(ticket.dueDate)}</td><td><button class="row-arrow" data-ticket="${escape(ticket.id)}" aria-label="Åpne ${escape(ticket.subject)}">${icon('chevron')}</button></td></tr>`;
+    const details = item && [
+      item.price !== null && item.price !== undefined ? `${price(item.price)} ${escape(item.currency || 'NOK')}` : '',
+      item.description ? escape(item.description) : '',
+    ].filter(Boolean).join(' · ');
+    return `<tr data-ticket="${escape(ticket.id)}"><td><div class="ticket-cell"><div class="mini-product">${productVisual(item, index)}</div><div><strong>${href ? `<a class="product-title-link" href="${escape(href)}" target="_blank" rel="noopener noreferrer">${escape(name)}</a>` : escape(name)}</strong><small>#${escape(ticket.number)} · ${employee() ? escape(person(ticket.ambassadorId)?.name) : escape(ticket.channel)}</small>${details ? `<small class="ticket-product-details">${details}</small>` : ''}</div></div></td><td>${pill(ticket.status)}</td><td class="due due-column">${date(ticket.dueDate)}</td><td><button class="row-arrow" data-ticket="${escape(ticket.id)}" aria-label="Åpne ${escape(ticket.subject)}">${icon('chevron')}</button></td></tr>`;
   }).join('')}</tbody></table></div>`;
 }
 
@@ -321,7 +325,7 @@ document.addEventListener('click', async (event) => {
     button.disabled = true;
     try {
       const { product: details } = await api('/products/preview', { method: 'POST', body: { url: value } });
-      if (field.value === value) productPreview(details);
+      if (form.isConnected && field.value === value) productPreview(details);
     } catch (error) {
       if (field.value === value && preview) preview.textContent = error.message;
     } finally {

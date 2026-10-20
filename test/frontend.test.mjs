@@ -88,10 +88,32 @@ test('ticket rows show the validated product link and fetched product image', as
       id: 'ticket-1', number: 1001, subject: 'Produktguide', status: 'approved',
       channel: 'Instagram', dueDate: null, ambassadorId: 'emil', productId: 'demo',
       productUrl: 'https://www.olbrygging.no/produkt/ekte-produkt',
-      productSnapshot: { name: 'Ekte produkt', image: 'https://cdn.example/produkt.jpg' },
+      productSnapshot: { name: 'Ekte produkt', image: 'https://cdn.example/produkt.jpg', price: 129.5, currency: 'NOK', description: 'Frisk <b>råvare</b>' },
     }];`);
   const row = run('ticketTable(state.tickets)');
   assert.match(row, /href="https:\/\/www\.olbrygging\.no\/produkt\/ekte-produkt"/);
   assert.match(row, /src="https:\/\/cdn\.example\/produkt\.jpg"/);
+  assert.match(row, /129,5 NOK/);
+  assert.match(row, /Frisk &lt;b&gt;råvare&lt;\/b&gt;/);
   assert.equal(run("productLink('https://evil.example/product')"), '');
+});
+
+test('a delayed product preview does not update a replacement request form', async () => {
+  const { context, run, listeners } = await frontend();
+  run('let previewCalls = 0; productPreview = () => { previewCalls++; };');
+  const field = { value: 'https://www.olbrygging.no/produkt/eksempel' };
+  const preview = { textContent: '' };
+  const form = {
+    isConnected: false,
+    querySelector: (selector) => selector === '[name=productUrl]' ? field : preview,
+  };
+  const button = {
+    dataset: { action: 'preview-product' },
+    closest: () => form,
+    matches: () => false,
+  };
+  context.fetch = async () => ({ ok: true, json: async () => ({ product: { name: 'Produkt' } }) });
+  await listeners.click({ target: { closest: () => button, classList: { contains: () => false } } });
+  assert.equal(run('previewCalls'), 0);
+  assert.equal(preview.textContent, '');
 });
