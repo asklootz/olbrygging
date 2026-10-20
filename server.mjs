@@ -146,7 +146,7 @@ function productFromHtml(html, url) {
     if (key && attributes.content) metadata.set(key, attributes.content);
   }
   const structured = [];
-  for (const match of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)) {
+  for (const match of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi)) {
     if (!/application\/ld\+json/i.test(tagAttributes(`<script ${match[1]}>`).type || '')) continue;
     try {
       const parsed = JSON.parse(match[2]);
@@ -171,7 +171,7 @@ function productFromHtml(html, url) {
   } catch { /* An invalid or absent image is optional. */ }
   const priceValue = metadata.get('product:price:amount') || offer.price || offer.lowPrice;
   const numericPrice = Number(String(priceValue ?? '').replace(',', '.'));
-  const titleTag = html.match(/<title\b[^>]*>([\s\S]*?)<\/title\s*>/i)?.[1]?.replace(/<[^>]+>/g, '');
+  const titleTag = html.match(/<title\b[^>]*>([\s\S]*?)<\/title\s*>/i)?.[1];
   const name = product.name || metadata.get('og:title') || metadata.get('twitter:title') || titleTag;
   if (!name) throw new ApiError(422, 'Fant ikke produktinformasjon på siden. Kontroller at lenken peker til et produkt.');
   return {
