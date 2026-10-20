@@ -38,12 +38,15 @@ let toastTimer;
 let lastFocus;
 let modalTicketId = null;
 let mutating = false;
+let authVersion = 0;
 
 async function api(path, { method = 'GET', body } = {}) {
+  const version = authVersion;
   const response = await fetch(`/api${path}`, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
   const data = await response.json();
   if (!response.ok) {
-    if (response.status === 401 && state.user) {
+    if (response.status === 401 && state.user && version === authVersion) {
+      authVersion++;
       state.user = null;
       closeModal();
       renderLogin();
@@ -88,21 +91,25 @@ function renderLogin(error = '') {
 }
 
 async function login(email, password, button) {
+  const version = ++authVersion;
   if (button) button.disabled = true;
   try {
     const data = await api('/login', { method: 'POST', body: { email, password } });
+    if (version !== authVersion) return;
     state.user = data.user;
     state.page = 'overview';
     state.query = '';
     state.filter = 'Alle';
     await loadWorkspace();
   } catch (error) {
-    renderLogin(error.message);
+    if (version === authVersion) renderLogin(error.message);
   }
 }
 
 async function loadWorkspace() {
+  const version = authVersion;
   const data = await api('/workspace');
+  if (version !== authVersion) return;
   Object.assign(state, data);
   render();
 }
@@ -286,6 +293,7 @@ document.addEventListener('click', async (event) => {
     return ticket ? ticketDetail(ticket.id) : navigate('messages');
   }
   if (button.dataset.action === 'logout') {
+    authVersion++;
     try {
       await api('/logout', { method: 'POST' });
       state.user = null;
@@ -341,17 +349,33 @@ document.addEventListener('change', async (event) => {
   const field = event.target;
   if (!field.dataset.update || !modalTicketId) return;
   const id = modalTicketId;
-  const draft = modalRoot.querySelector('#message-body')?.value || '';
+  const version = authVersion;
+  const refreshDetail = () => {
+    if (version !== authVersion || modalTicketId !== id) return;
+    const composer = modalRoot.querySelector('#message-body');
+    const draft = composer?.value || '';
+    const selected = modalRoot.querySelector('[name=sendEmail]')?.checked;
+    const focused = document.activeElement === composer;
+    const selection = [composer?.selectionStart, composer?.selectionEnd];
+    ticketDetail(id, draft);
+    const checkbox = modalRoot.querySelector('[name=sendEmail]');
+    if (checkbox) checkbox.checked = selected;
+    if (focused) {
+      const newComposer = modalRoot.querySelector('#message-body');
+      newComposer.focus();
+      newComposer.setSelectionRange(...selection);
+    }
+  };
   mutating = true;
   field.disabled = true;
   try {
     await api(`/tickets/${encodeURIComponent(id)}`, { method: 'PATCH', body: { [field.dataset.update]: field.value } });
     await loadWorkspace();
-    ticketDetail(id, draft);
+    refreshDetail();
     toast('Samarbeidet er oppdatert.');
   } catch (error) {
     toast(error.message);
-    if (state.user) ticketDetail(id, draft);
+    if (state.user) refreshDetail();
   } finally { mutating = false; field.disabled = false; }
 });
 
@@ -384,9 +408,10 @@ start();
 
 setInterval(async () => {
   if (!state.user || document.hidden || mutating) return;
+  const version = authVersion;
   try {
     const data = await api('/workspace');
-    if (mutating || JSON.stringify(data.tickets) === JSON.stringify(state.tickets)) return;
+    if (version !== authVersion || !state.user || data.user.id !== state.user.id || mutating || JSON.stringify(data.tickets) === JSON.stringify(state.tickets)) return;
     const focused = document.activeElement;
     if (modalTicketId && focused?.matches('select,input')) return;
     const id = modalTicketId;
