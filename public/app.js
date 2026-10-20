@@ -42,7 +42,12 @@ let authVersion = 0;
 
 async function api(path, { method = 'GET', body } = {}) {
   const version = authVersion;
-  const response = await fetch(`/api${path}`, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  let response;
+  try {
+    response = await fetch(`/api${path}`, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  } catch {
+    throw new Error('Ingen kontakt med portalen. Kontroller nettforbindelsen og prøv igjen. Ulagret tekst beholdes mens siden er åpen.');
+  }
   const data = await response.json();
   if (!response.ok) {
     if (response.status === 401 && state.user && version === authVersion) {
@@ -134,6 +139,7 @@ function render() {
     <div class="sidebar-bottom"><div class="sidebar-note">${icon('leaf')}<h3>Vi brygger bedre sammen.</h3><p>En idé, et spørsmål eller litt inspirasjon? Vi er her for deg.</p><button data-action="help">Slik fungerer portalen ${icon('arrow')}</button></div><div class="side-user">${avatar(state.user)}<div><strong>${escape(state.user.name)}</strong><small>${employee() ? 'Ølbrygging-teamet' : 'Ambassadør'}</small></div><button data-action="logout" title="Logg ut" aria-label="Logg ut">${icon('logout')}</button></div></div></aside>
     <div class="workspace"><header class="topbar"><div class="mobile-brand" aria-label="Ølbrygging">ø</div><div class="breadcrumb">Ambassadørportalen ${icon('chevron')}<span>${titles[state.page]}</span></div><div class="top-tools"><div class="search">${icon('search')}<label class="sr-only" for="global-search">Søk i produkter og samarbeid</label><input id="global-search" type="search" placeholder="Søk i portalen …" value="${escape(state.query)}" maxlength="100"></div><span class="demo-label">Demomodus</span><button class="icon-button" data-action="help" aria-label="Hjelp og informasjon" title="Hjelp">${icon('help')}</button>${avatar(state.user, 'green')}</div></header>
     <main class="main" id="main-content">${pageContent()}</main></div></div>`;
+  app.querySelector('.top-tools').insertAdjacentHTML('beforeend', `<button class="icon-button mobile-logout" data-action="logout" title="Logg ut" aria-label="Logg ut">${icon('logout')}</button>`);
 }
 
 function pageContent() {
@@ -400,7 +406,7 @@ async function start() {
     if (user) await loadWorkspace();
     else renderLogin();
   } catch {
-    app.innerHTML = `<main class="loading"><span class="brand-mark">ø</span><h1>Vi fikk ikke kontakt med portalen.</h1><p>Kontroller at serveren kjører, og prøv igjen.</p><button class="primary" data-action="retry">Prøv igjen</button></main>`;
+    app.innerHTML = `<main class="loading"><span class="brand-mark">ø</span><h1>Vi fikk ikke kontakt med portalen.</h1><p>Portalen krever nett for innlogging, samarbeid og meldinger. Kontroller nettforbindelsen og prøv igjen.</p><button class="primary" data-action="retry">Prøv igjen</button></main>`;
     app.querySelector('button').addEventListener('click', start, { once: true });
   }
 }

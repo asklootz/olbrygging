@@ -78,3 +78,14 @@ test('metadata saves preserve the latest draft, cursor and email selection', asy
   assert.equal(elements['#message-body'].selectionStart, 9);
   assert.equal(elements['#message-body'].selectionEnd, 14);
 });
+
+test('network failures give actionable feedback without clearing the workspace or draft', async () => {
+  const { context, run, elements } = await frontend();
+  run("state.user = { id: 'emil' }; state.tickets = [{ id: 'ticket-1001' }];");
+  elements['#message-body'] = { value: 'Unsent draft' };
+  context.fetch = async () => { throw new TypeError('Failed to fetch'); };
+  await assert.rejects(run("api('/tickets/ticket-1001/messages', { method: 'POST', body: { body: 'Unsent draft' } })"), /Kontroller nettforbindelsen/);
+  assert.equal(run('state.user.id'), 'emil');
+  assert.equal(run('state.tickets.length'), 1);
+  assert.equal(elements['#message-body'].value, 'Unsent draft');
+});

@@ -40,6 +40,17 @@ async function fixture(t, options = {}) {
   return { app, base, call, login, dataFile, publicDir, directory };
 }
 
+test('PWA assets are publicly served with correct types and revalidation headers', async (t) => {
+  const { base } = await fixture(t, { publicDir: resolve('public') });
+  for (const [path, type] of [['/manifest.webmanifest', 'application/manifest+json'], ['/sw.js', 'text/javascript'], ['/pwa.js', 'text/javascript'], ['/icons/icon-192.png', 'image/png'], ['/icons/icon-512.png', 'image/png'], ['/icons/apple-touch-icon.png', 'image/png']]) {
+    const response = await fetch(`${base}${path}`);
+    assert.equal(response.status, 200);
+    assert.ok(response.headers.get('content-type').startsWith(type));
+    assert.equal(response.headers.get('cache-control'), 'no-cache');
+    assert.ok((await response.arrayBuffer()).byteLength > 0);
+  }
+});
+
 test('authentication, safe workspace data, strict cookies and logout', async (t) => {
   const { call, login, dataFile } = await fixture(t);
   assert.deepEqual((await call('/api/session')).body, { user: null });

@@ -11,3 +11,39 @@
 @media(max-width:980px){.overview-grid{grid-template-columns:1fr}.overview-aside{display:grid;grid-template-columns:1fr 1fr;gap:17px}.tip-card{margin:0;display:flex;flex-direction:column;justify-content:center}.contact-person{margin:15px 0}.contact-footer{display:none}.contact p.contact-copy{margin-bottom:12px}.product-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.product-action{flex-direction:row;align-items:center}.product-image{height:180px}.metrics{gap:10px}.metric-top{font-size:9px}.breadcrumb{display:none}.top-tools{width:100%;justify-content:flex-end}.search{margin-right:auto}.login-story{padding:35px 9%}.login-story h1{font-size:43px;margin-top:60px}.login-panel{padding:35px}}
 @media(max-width:720px){.shell{display:block}.sidebar{position:fixed;top:auto;bottom:0;height:66px;width:100%;padding:0 8px;border-top:1px solid #385344;display:block}.sidebar .brand,.nav-label,.sidebar-bottom{display:none}.nav{display:flex;justify-content:space-around;height:100%;gap:0}.nav button{flex:1;flex-direction:column;justify-content:center;gap:5px;padding:8px 3px;font-size:8px;border-radius:0}.nav button .count{display:none}.nav button.active:before{display:none}.nav button .icon{width:20px;height:20px}.workspace{padding-bottom:66px}.topbar{height:65px;padding:0 20px}.mobile-brand{display:block;font-size:27px;font-family:Georgia,serif;font-weight:bold}.top-tools{width:auto;gap:10px;flex:1}.search{margin-left:auto;margin-right:0}.search input{width:160px;font-size:10px}.top-tools>.demo-label{display:none}.top-tools>.avatar{display:none}.main{padding:25px 18px}.page-heading{align-items:flex-start;gap:12px;margin-bottom:24px}.page-heading h1{font-size:24px}.page-heading p{font-size:11px;max-width:250px}.page-heading>.primary{padding:10px;font-size:10px;margin-top:25px}.page-heading .eyebrow{font-size:8px}h1 .heading-wave{font-size:20px}.metrics{grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:22px}.metric-top{font-size:11px}.metric{padding:15px 17px}.metric strong{font-size:26px}.metric small{font-size:9px}.overview-grid{margin-bottom:25px}.overview-aside{grid-template-columns:1fr}.tip-card{display:none}.contact-person{margin:14px 0}.contact{padding:19px}.contact p.contact-copy{font-size:11px}.contact .primary{width:auto}.contact .eyebrow{font-size:9px}.contact-footer{display:flex;position:absolute;right:20px;bottom:20px;border:0;padding:0}.product-grid{gap:12px}.product-image{height:140px}.product-info h3{font-size:11px}.product-info p{font-size:9px}.product-action{flex-direction:column;gap:10px;align-items:stretch}.product-action button{padding:9px;font-size:10px}.section-heading h2{font-size:16px}.section-heading p{font-size:10px}.section-heading .text-button{font-size:10px}.page-foot{font-size:8px;gap:10px}.page-foot span:last-child{display:none}.card-head{padding:18px}.card-head h2{font-size:14px}.card-head .text-button{font-size:9px}.due-column{display:none}.ticket-cell{min-width:150px}.ticket-cell strong{font-size:10px}td,th{padding:13px}.pill{font-size:9px;padding:5px 6px}.table-foot{font-size:9px;padding:13px 18px}.modal-backdrop{padding:12px}.modal{max-height:calc(100dvh - 24px)}.drawer-backdrop{padding:0}.drawer{height:100dvh;max-height:100dvh;border-radius:0;width:100%}.modal-head,.drawer .modal-head{padding:20px}.modal-body{padding:20px}.ticket-meta{padding:18px;gap:8px}.ticket-meta label{font-size:8px}.ticket-meta select{font-size:9px;padding:8px 5px}.conversation{padding:22px 18px}.composer{padding:15px 18px}.composer-actions{gap:8px}.email-link{font-size:9px}.inbox-item{padding:16px;gap:10px}.inbox-item .pill{display:none}.inbox-item h3{font-size:11px}.inbox-item p{font-size:10px}.inbox-item>small{font-size:8px}.login{display:block}.login-story{min-height:270px;padding:25px}.login-story h1{font-size:34px;margin:30px 0 12px;max-width:290px;position:relative;z-index:1}.login-story>p{font-size:11px;max-width:240px;margin:0;position:relative;z-index:1}.login-art{position:absolute;width:170px;right:-25px;bottom:-35px;opacity:.35}.story-foot{display:none}.login-panel{padding:32px 25px}.login-box{max-width:430px}.login-box h2{font-size:25px}.login-box .eyebrow{margin-bottom:12px}.demo-box{margin-top:20px}.login-note{margin-bottom:0}.form-row{grid-template-columns:1fr;gap:0}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+.mobile-logout{display:none}
+body{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right)}
+#connection-status{background:#f5e8c8;color:#183c32;padding:12px 18px;font-size:14px;line-height:1.5}
+.loading{min-height:100dvh;height:auto;padding:30px;text-align:center}
+@media(max-width:720px){
+  button,.email-link{min-height:44px}
+  input:not([type=checkbox]),select,textarea,.search input,.ticket-meta select,.ticket-meta input,.composer textarea{font-size:16px;min-height:44px}
+  .sidebar{height:calc(66px + env(safe-area-inset-bottom));padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+  .workspace{padding-bottom:calc(66px + env(safe-area-inset-bottom))}
+  .nav button{font-size:10px}
+  .topbar{height:auto;min-height:65px;padding:env(safe-area-inset-top) 12px 0;gap:8px}
+  .top-tools{gap:4px;min-width:0}
+  .top-tools .icon-button{width:44px;flex-shrink:0}
+  .mobile-logout{display:inline-flex}
+  .search{flex:1;min-width:0}
+  .search input{width:100%;min-width:0}
+  .main{padding-inline:16px}
+  .page-heading{flex-wrap:wrap}
+  .page-heading>.primary{margin-top:0;font-size:12px}
+  .product-info h3,.inbox-item h3{font-size:14px}
+  .product-info p,.inbox-item p,.page-heading p{font-size:12px}
+  .product-action button,.filter{font-size:12px}
+  .product-info h3,.ticket-description,.modal-head h2{overflow-wrap:anywhere}
+  .modal-backdrop{padding-top:max(12px,env(safe-area-inset-top));padding-bottom:max(12px,env(safe-area-inset-bottom))}
+  .drawer-backdrop{padding:0}
+  .drawer .modal-head{padding-top:calc(20px + env(safe-area-inset-top))}
+  .drawer .modal-head,.composer{flex-shrink:0}
+  .composer{padding-bottom:calc(15px + env(safe-area-inset-bottom))}
+  .composer-actions{flex-wrap:wrap}
+  .ticket-meta{grid-template-columns:1fr}
+  .ticket-meta label{font-size:11px}
+  .login-panel{padding-bottom:calc(32px + env(safe-area-inset-bottom))}
+  .login-story{padding-top:calc(25px + env(safe-area-inset-top))}
+  #toast{bottom:calc(80px + env(safe-area-inset-bottom))}
+}
+@media(max-width:359px){.product-grid{grid-template-columns:1fr}.demo-actions{flex-wrap:wrap}}
