@@ -348,7 +348,7 @@ export function createApp(options = {}) {
     if (!existsSync(target) || !statSync(target).isFile()) throw new ApiError(404, 'Fant ikke siden.');
     const realTarget = realpathSync(target);
     if (!realTarget.startsWith(`${realpathSync(publicDir)}${sep}`)) throw new ApiError(404, 'Fant ikke filen.');
-    const mime = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.mjs': 'text/javascript', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.ico': 'image/x-icon', '.woff2': 'font/woff2' };
+    const mime = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.mjs': 'text/javascript', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.ico': 'image/x-icon', '.woff2': 'font/woff2' };
     const content = readFileSync(target);
     res.writeHead(200, { 'Content-Type': `${mime[extname(target)] || 'application/octet-stream'}${['.html', '.css', '.js', '.mjs', '.svg'].includes(extname(target)) ? '; charset=utf-8' : ''}`, 'Content-Length': content.length, 'Cache-Control': 'no-cache' });
     res.end(req.method === 'HEAD' ? undefined : content);
