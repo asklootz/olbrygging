@@ -1,6 +1,6 @@
 const app = document.querySelector('#app');
 const modalRoot = document.querySelector('#modal-root');
-const state = { user: null, products: [], tickets: [], users: [], page: 'overview', query: '', filter: 'Alle', emailConfigured: false };
+const state = { user: null, products: [], tickets: [], users: [], page: 'overview', query: '', filter: 'Alle', emailConfigured: false, demoMode: false };
 const statuses = { requested: 'Avventer svar', approved: 'Godkjent', in_progress: 'Pågår', review: 'Til gjennomgang', completed: 'Fullført', declined: 'Avslått' };
 const paths = {
   grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
@@ -86,8 +86,8 @@ function renderLogin(error = '') {
     <section class="login-story">${brand()}<h1>Gode råvarer.<br>Enda bedre<br><em>samarbeid.</em></h1><p>For deg som deler bryggeglede. Velkommen til fellesskapet vårt.</p><div class="login-art">${illustration({ category: 'Ølsett', name: 'Illustrert bryggesett' })}</div><div class="story-foot">${icon('leaf')} Sammen skaper vi bryggeglede · Ølbrygging AS</div></section>
     <section class="login-panel"><div class="login-box"><div class="eyebrow">Laget for bryggeglede</div><h2>Velkommen tilbake.</h2><p>Produktene, samarbeidene og samtalene dine.<br>Alt samlet på ett sted.</p>
     <form id="login-form"><div class="field"><label for="email">E-postadresse</label><input id="email" name="email" type="email" autocomplete="username" placeholder="deg@eksempel.no" required maxlength="254"></div><div class="field"><label for="password">Passord</label><input id="password" name="password" type="password" autocomplete="current-password" placeholder="Ditt passord" required maxlength="128"></div><p class="error" role="alert">${escape(error)}</p><button class="primary" type="submit">Logg inn ${icon('arrow')}</button></form>
-    <div class="demo-box"><label>Ta en titt på portalen</label><p>Prøv med eksempeldata. Ingen ekte bestillinger eller e-poster sendes uten konfigurert e-posttjeneste.</p><div class="demo-actions"><button class="secondary" data-demo="ambassador">${icon('leaf')} Ambassadør</button><button class="secondary" data-demo="employee">${icon('bag')} Ansatt</button></div></div>
-    <p class="login-note">Lokal demonstrasjon · Eksempelprodukter, ikke en live produktkatalog.<br>Bruk kun fiktive opplysninger i demoen.</p></div></section></main>`;
+    ${state.demoMode ? `<div class="demo-box"><label>Ta en titt på portalen</label><p>Prøv med eksempeldata. Ingen ekte bestillinger eller e-poster sendes uten konfigurert e-posttjeneste.</p><div class="demo-actions"><button class="secondary" data-demo="ambassador">${icon('leaf')} Ambassadør</button><button class="secondary" data-demo="employee">${icon('bag')} Ansatt</button></div></div>` : ''}
+    <p class="login-note">${state.demoMode ? 'Lokal demonstrasjon · Eksempelprodukter, ikke en live produktkatalog.<br>Bruk kun fiktive opplysninger i demoen.' : 'Bruk kontoen du har fått av Ølbrygging.<br>Kontakt administrator hvis du trenger tilgang eller nytt passord.'}</p></div></section></main>`;
 }
 
 async function login(email, password, button) {
@@ -132,13 +132,13 @@ function render() {
     ['messages', 'chat', 'Meldinger'],
   ].map(([page, symbol, label]) => `<button data-page="${page}" class="${state.page === page ? 'active' : ''}" ${state.page === page ? 'aria-current="page"' : ''}>${icon(symbol)}<span>${label}</span>${page === 'tickets' ? `<span class="count">${state.tickets.filter(active).length}</span>` : ''}</button>`).join('')}</nav>
     <div class="sidebar-bottom"><div class="sidebar-note">${icon('leaf')}<h3>Vi brygger bedre sammen.</h3><p>En idé, et spørsmål eller litt inspirasjon? Vi er her for deg.</p><button data-action="help">Slik fungerer portalen ${icon('arrow')}</button></div><div class="side-user">${avatar(state.user)}<div><strong>${escape(state.user.name)}</strong><small>${employee() ? 'Ølbrygging-teamet' : 'Ambassadør'}</small></div><button data-action="logout" title="Logg ut" aria-label="Logg ut">${icon('logout')}</button></div></div></aside>
-    <div class="workspace"><header class="topbar"><div class="mobile-brand" aria-label="Ølbrygging">ø</div><div class="breadcrumb">Ambassadørportalen ${icon('chevron')}<span>${titles[state.page]}</span></div><div class="top-tools"><div class="search">${icon('search')}<label class="sr-only" for="global-search">Søk i produkter og samarbeid</label><input id="global-search" type="search" placeholder="Søk i portalen …" value="${escape(state.query)}" maxlength="100"></div><span class="demo-label">Demomodus</span><button class="icon-button" data-action="help" aria-label="Hjelp og informasjon" title="Hjelp">${icon('help')}</button>${avatar(state.user, 'green')}</div></header>
+    <div class="workspace"><header class="topbar"><div class="mobile-brand" aria-label="Ølbrygging">ø</div><div class="breadcrumb">Ambassadørportalen ${icon('chevron')}<span>${titles[state.page]}</span></div><div class="top-tools"><div class="search">${icon('search')}<label class="sr-only" for="global-search">Søk i produkter og samarbeid</label><input id="global-search" type="search" placeholder="Søk i portalen …" value="${escape(state.query)}" maxlength="100"></div>${state.demoMode ? '<span class="demo-label">Demomodus</span>' : ''}<button class="icon-button" data-action="help" aria-label="Hjelp og informasjon" title="Hjelp">${icon('help')}</button>${avatar(state.user, 'green')}</div></header>
     <main class="main" id="main-content">${pageContent()}</main></div></div>`;
 }
 
 function pageContent() {
   const content = state.page === 'overview' ? overview() : state.page === 'products' ? catalogue() : state.page === 'messages' ? inbox() : ticketsPage();
-  return `${content}<footer class="page-foot"><span>© ${new Date().getFullYear()} Ølbrygging AS · Sammen skaper vi bryggeglede.</span><span>${icon('leaf')} Eksempeldata · Lokal demo</span></footer>`;
+  return `${content}<footer class="page-foot"><span>© ${new Date().getFullYear()} Ølbrygging AS · Sammen skaper vi bryggeglede.</span><span>${icon('leaf')} ${state.demoMode ? 'Eksempeldata · Lokal demo' : 'Ambassadørportalen'}</span></footer>`;
 }
 
 function heading(title, subtitle, action = '') {
@@ -253,7 +253,7 @@ function ticketDetail(id, preserveDraft = '') {
 
 function help() {
   modalTicketId = null;
-  showModal(`${modalHead('Et godt samarbeid, steg for steg.')}<div class="modal-body"><ol class="help-list"><li><strong>Finn noe du vil dele.</strong> Utforsk produktkatalogen og send en forespørsel med idé, kanal og ønsket publiseringsdato.</li><li><strong>Bli enige med teamet.</strong> En ansatt i Ølbrygging følger opp og godkjenner samarbeidet. Kontaktpersonen finner du på samarbeidet.</li><li><strong>Del bryggeglede.</strong> Start et godkjent samarbeid ved å endre status til «Pågår». Send innhold og lenker i samtalen og velg «Til gjennomgang» når du er klar.</li><li><strong>Hold praten i gang.</strong> Meldinger lagres på samarbeidet. E-postutkast kan åpnes i e-postappen. Med konfigurert e-posttjeneste kan du også sende varsler fra portalen.</li></ol><p>Dette er en lokal demo med eksempelprodukter og demokontoer. E-postsvar importeres ikke automatisk. Ikke bruk virkelige personopplysninger.</p><button class="primary" data-action="close">Det høres bra ut ${icon('check')}</button></div>`);
+  showModal(`${modalHead('Et godt samarbeid, steg for steg.')}<div class="modal-body"><ol class="help-list"><li><strong>Finn noe du vil dele.</strong> Utforsk produktkatalogen og send en forespørsel med idé, kanal og ønsket publiseringsdato.</li><li><strong>Bli enige med teamet.</strong> En ansatt i Ølbrygging følger opp og godkjenner samarbeidet. Kontaktpersonen finner du på samarbeidet.</li><li><strong>Del bryggeglede.</strong> Start et godkjent samarbeid ved å endre status til «Pågår». Send innhold og lenker i samtalen og velg «Til gjennomgang» når du er klar.</li><li><strong>Hold praten i gang.</strong> Meldinger lagres på samarbeidet. E-postutkast kan åpnes i e-postappen. Med konfigurert e-posttjeneste kan du også sende varsler fra portalen.</li></ol><p>${state.demoMode ? 'Dette er en lokal demo med eksempelprodukter og demokontoer. Ikke bruk virkelige personopplysninger.' : 'Kontakt administrator hvis du trenger hjelp med kontoen din.'} E-postsvar importeres ikke automatisk.</p><button class="primary" data-action="close">Det høres bra ut ${icon('check')}</button></div>`);
 }
 
 function navigate(page) {
@@ -277,7 +277,7 @@ document.addEventListener('click', async (event) => {
     }
     return;
   }
-  if (button.dataset.demo) return login(`${button.dataset.demo}@olbrygging.example`, 'BrewTogether!2026', button);
+  if (button.dataset.demo && state.demoMode) return login(`${button.dataset.demo}@olbrygging.example`, 'BrewTogether!2026', button);
   if (button.dataset.page) return navigate(button.dataset.page);
   if (button.dataset.filter) {
     state.filter = button.dataset.filter;
@@ -395,6 +395,8 @@ document.addEventListener('keydown', (event) => {
 
 async function start() {
   try {
+    const config = await api('/config');
+    state.demoMode = config.demoMode === true;
     const { user } = await api('/session');
     state.user = user;
     if (user) await loadWorkspace();

@@ -42,6 +42,7 @@ async function fixture(t, options = {}) {
 
 test('authentication, safe workspace data, strict cookies and logout', async (t) => {
   const { call, login, dataFile } = await fixture(t);
+  assert.deepEqual((await call('/api/config')).body, { demoMode: true });
   assert.deepEqual((await call('/api/session')).body, { user: null });
   assert.equal((await call('/api/workspace')).status, 401);
   const rejected = await call('/api/login', { method: 'POST', body: { email: 'ambassador@olbrygging.example', password: 'wrong' } });

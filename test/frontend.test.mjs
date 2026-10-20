@@ -46,6 +46,16 @@ test('a delayed workspace poll cannot restore a previous account after logout or
   }
 });
 
+test('demo login shortcuts appear only when the server enables demo mode', async () => {
+  const { context, run } = await frontend();
+  run('state.demoMode = false; renderLogin();');
+  assert.equal(context.document.querySelector('#app').innerHTML.includes('data-demo='), false);
+  assert.match(context.document.querySelector('#app').innerHTML, /Kontakt administrator/);
+  run('state.demoMode = true; renderLogin();');
+  assert.match(context.document.querySelector('#app').innerHTML, /data-demo="ambassador"/);
+  assert.match(context.document.querySelector('#app').innerHTML, /Lokal demonstrasjon/);
+});
+
 test('metadata saves preserve the latest draft, cursor and email selection', async () => {
   const { context, run, elements, listeners } = await frontend();
   const composer = { value: 'Initial draft', selectionStart: 0, selectionEnd: 0 };

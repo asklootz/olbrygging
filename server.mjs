@@ -3,13 +3,14 @@ import { randomBytes, randomUUID, scryptSync, timingSafeEqual, createHash } from
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, realpathSync, statSync } from 'node:fs';
 import { dirname, resolve, sep, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ApiError, text, dateValue, checkFields, readBody } from './api.mjs';
+import { createSupabaseApi } from './supabase.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const STATUSES = ['requested', 'approved', 'in_progress', 'review', 'completed', 'declined'];
 const CHANNELS = ['Instagram', 'TikTok', 'YouTube', 'Blogg', 'Annet'];
 const COOKIE = 'olbrygging_session';
 const SESSION_MS = 1000 * 60 * 60 * 12;
-const MAX_BODY = 24 * 1024;
 const safeUser = ({ id, name, email, role }) => ({ id, name, email, role });
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 
@@ -80,53 +81,6 @@ function seed() {
   };
 }
 
-class ApiError extends Error {
-  constructor(status, message) {
-    super(message);
-    this.status = status;
-  }
-}
-
-function text(value, field, max, { optional = false, min = 1 } = {}) {
-  if (optional && value === undefined) return undefined;
-  if (typeof value !== 'string' || value.trim().length < min || value.length > max) {
-    throw new ApiError(400, `${field} må være tekst på ${min}–${max} tegn.`);
-  }
-  return value.trim();
-}
-
-function dateValue(value) {
-  if (value === null || value === '') return null;
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)
-    || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString().slice(0, 10) !== value) {
-    throw new ApiError(400, 'Frist må være en gyldig dato (ÅÅÅÅ-MM-DD).');
-  }
-  return value;
-}
-
-function checkFields(body, fields) {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new ApiError(400, 'Forventet et JSON-objekt.');
-  if (Object.keys(body).some((key) => !fields.includes(key))) throw new ApiError(400, 'Forespørselen inneholder ukjente felt.');
-}
-
-async function readBody(req) {
-  if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) {
-    throw new ApiError(415, 'Bruk Content-Type: application/json.');
-  }
-  let size = 0;
-  const chunks = [];
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > MAX_BODY) throw new ApiError(413, 'Forespørselen er for stor.');
-    chunks.push(chunk);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  } catch {
-    throw new ApiError(400, 'Ugyldig JSON.');
-  }
-}
-
 export function createApp(options = {}) {
   const dataFile = resolve(options.dataFile ?? process.env.DATA_FILE ?? resolve(ROOT, 'data/workspace.json'));
   const publicDir = resolve(options.publicDir ?? resolve(ROOT, 'public'));
@@ -136,6 +90,17 @@ export function createApp(options = {}) {
   const emailTimeoutMs = options.emailTimeoutMs ?? 8000;
   const fetchEmail = options.fetchEmail ?? globalThis.fetch;
   const secureCookies = options.secureCookies ?? process.env.COOKIE_SECURE === 'true';
+  const supabase = createSupabaseApi({
+    url: options.supabaseUrl ?? process.env.SUPABASE_URL,
+    key: options.supabaseKey ?? (process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY),
+    serviceKey: options.supabaseServiceKey ?? process.env.SUPABASE_SERVICE_ROLE_KEY,
+    fetch: options.fetchSupabase ?? globalThis.fetch,
+    timeoutMs: options.supabaseTimeoutMs ?? 8000,
+    secureCookies, emailApiKey, emailFrom, emailTimeoutMs, fetchEmail,
+  });
+  if (process.env.NODE_ENV === 'production' && (!supabase || !secureCookies)) {
+    throw new Error('Production requires Supabase and COOKIE_SECURE=true.');
+  }
   const sessions = new Map();
   const attempts = new Map();
   let mutationQueue = Promise.resolve();
@@ -147,7 +112,9 @@ export function createApp(options = {}) {
     renameSync(pending, dataFile);
   };
   let state;
-  if (existsSync(dataFile)) {
+  if (supabase) {
+    state = null;
+  } else if (existsSync(dataFile)) {
     state = JSON.parse(readFileSync(dataFile, 'utf8'));
     if (state.version !== 1 || !['users', 'products', 'tickets'].every((key) => Array.isArray(state[key]))) {
       throw new Error('Unsupported workspace data format.');
@@ -189,10 +156,10 @@ export function createApp(options = {}) {
 
   async function api(req, res, pathname) {
     const method = req.method;
-    const known = ['/api/session', '/api/login', '/api/logout', '/api/workspace', '/api/tickets'].includes(pathname)
+    const known = ['/api/config', '/api/session', '/api/login', '/api/logout', '/api/workspace', '/api/tickets'].includes(pathname)
       || /^\/api\/tickets\/[a-zA-Z0-9_-]{1,100}(?:\/messages)?$/.test(pathname);
     if (!known) throw new ApiError(404, 'Ukjent API-endepunkt.');
-    const allowed = pathname === '/api/session' || pathname === '/api/workspace' ? ['GET']
+    const allowed = ['/api/config', '/api/session', '/api/workspace'].includes(pathname) ? ['GET']
       : /^\/api\/tickets\/[^/]+$/.test(pathname) ? ['PATCH'] : ['POST'];
     if (!allowed.includes(method)) {
       res.setHeader('Allow', allowed.join(', '));
@@ -204,6 +171,11 @@ export function createApp(options = {}) {
         || req.headers['sec-fetch-site'] === 'cross-site') {
         throw new ApiError(403, 'Forespørselen må komme fra samme nettsted.');
       }
+    }
+    if (pathname === '/api/config') return json(res, 200, { demoMode: !supabase });
+    if (supabase) {
+      const { status, body } = await supabase(req, res, pathname);
+      return json(res, status, body);
     }
     const user = currentUser(req);
     if (pathname === '/api/session') return json(res, 200, { user: user ? safeUser(user) : null });
@@ -369,7 +341,7 @@ export function createApp(options = {}) {
       const parsed = new URL(req.url, 'http://localhost');
       const pathname = decodeURIComponent(parsed.pathname);
       if (pathname === '/api' || pathname.startsWith('/api/')) {
-        if (req.method === 'GET') await api(req, res, pathname);
+        if (supabase || req.method === 'GET') await api(req, res, pathname);
         else {
           const operation = mutationQueue.then(() => api(req, res, pathname));
           mutationQueue = operation.catch(() => {});
