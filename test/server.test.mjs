@@ -108,6 +108,50 @@ test('ticket creation, employee approval and ambassador workflow persist across 
   assert.equal(persistedTicket.assigneeId, 'marius');
 });
 
+test('product page links are restricted and fetched product details are attached to tickets', async (t) => {
+  const html = `<!doctype html><html><head>
+    <meta property="og:image" content="/images/produkt.jpg">
+    <script type="application/ld+json">{"@type":"Product","name":"Humle &amp; malt","description":"Friske råvarer","image":"/images/humle.jpg","offers":{"price":"129.50","priceCurrency":"NOK"}}</script>
+    </head><body></body></html>`;
+  let fetched;
+  const { call, login } = await fixture(t, {
+    fetchProductPage: async (url, options) => {
+      fetched = { url, options };
+      return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+    },
+  });
+  const cookie = await login();
+  for (const url of ['http://www.olbrygging.no/produkt/a', 'https://evil.example/produkt/a', 'https://www.olbrygging.no/']) {
+    assert.equal((await call('/api/products/preview', { method: 'POST', cookie, body: { url } })).status, 400);
+  }
+  assert.equal(fetched, undefined);
+  const preview = await call('/api/products/preview', {
+    method: 'POST', cookie, body: { url: 'https://www.olbrygging.no/produkt/a#detaljer' },
+  });
+  assert.equal(preview.status, 200);
+  assert.deepEqual(preview.body.product, {
+    url: 'https://www.olbrygging.no/produkt/a',
+    name: 'Humle & malt',
+    description: 'Friske råvarer',
+    price: 129.5,
+    currency: 'NOK',
+    image: 'https://www.olbrygging.no/images/produkt.jpg',
+  });
+  assert.equal(fetched.options.redirect, 'manual');
+  assert.equal(fetched.options.headers.Accept, 'text/html');
+  const created = await call('/api/tickets', {
+    method: 'POST', cookie,
+    body: {
+      productId: 'hop-citra', productUrl: 'https://www.olbrygging.no/produkt/a',
+      subject: 'En råvareguide', description: 'Presentere produktet.', channel: 'Instagram',
+    },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.ticket.productUrl, 'https://www.olbrygging.no/produkt/a');
+  assert.equal(created.body.ticket.productSnapshot.name, 'Humle & malt');
+  assert.equal(created.body.ticket.productSnapshot.price, 129.5);
+});
+
 test('cross-ambassador access, protected fields, and explicit staff creation', async (t) => {
   const { call, login } = await fixture(t);
   const cookie = await login();

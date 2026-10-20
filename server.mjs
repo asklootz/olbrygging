@@ -109,6 +109,107 @@ function checkFields(body, fields) {
   if (Object.keys(body).some((key) => !fields.includes(key))) throw new ApiError(400, 'Forespørselen inneholder ukjente felt.');
 }
 
+function productPageUrl(value) {
+  const raw = text(value, 'Produktlenke', 2000);
+  let url;
+  try { url = new URL(raw); } catch { throw new ApiError(400, 'Oppgi en gyldig produktlenke fra olbrygging.no.'); }
+  if (url.protocol !== 'https:' || url.hostname !== 'www.olbrygging.no' || url.port || url.username || url.password || url.pathname === '/') {
+    throw new ApiError(400, 'Produktlenken må være en HTTPS-side på www.olbrygging.no.');
+  }
+  url.hash = '';
+  return url;
+}
+
+function htmlValue(value = '') {
+  return value.replace(/&(#(?:x[\da-f]+|\d+)|amp|quot|apos|lt|gt);/gi, (entity, code) => {
+    if (code[0] === '#') {
+      const point = code[1].toLowerCase() === 'x' ? Number.parseInt(code.slice(2), 16) : Number.parseInt(code.slice(1), 10);
+      return Number.isFinite(point) && point <= 0x10ffff ? String.fromCodePoint(point) : entity;
+    }
+    return ({ amp: '&', quot: '"', apos: "'", lt: '<', gt: '>' })[code.toLowerCase()] ?? entity;
+  }).trim();
+}
+
+function tagAttributes(tag) {
+  const attributes = {};
+  for (const match of tag.matchAll(/([^\s=]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g)) {
+    attributes[match[1].toLowerCase()] = htmlValue(match[2] ?? match[3] ?? match[4] ?? '');
+  }
+  return attributes;
+}
+
+function productFromHtml(html, url) {
+  const metadata = new Map();
+  for (const match of html.matchAll(/<meta\b[^>]*>/gi)) {
+    const attributes = tagAttributes(match[0]);
+    const key = (attributes.property || attributes.name || attributes.itemprop || '').toLowerCase();
+    if (key && attributes.content) metadata.set(key, attributes.content);
+  }
+  const structured = [];
+  for (const match of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)) {
+    if (!/application\/ld\+json/i.test(tagAttributes(`<script ${match[1]}>`).type || '')) continue;
+    try {
+      const parsed = JSON.parse(match[2]);
+      const visit = (value) => {
+        if (Array.isArray(value)) return value.forEach(visit);
+        if (!value || typeof value !== 'object') return;
+        const types = Array.isArray(value['@type']) ? value['@type'] : [value['@type']];
+        if (types.some((type) => type === 'Product')) structured.push(value);
+        Object.values(value).forEach(visit);
+      };
+      visit(parsed);
+    } catch { /* Ignore invalid structured data and use page metadata instead. */ }
+  }
+  const product = structured[0] || {};
+  const offer = Array.isArray(product.offers) ? product.offers[0] || {} : product.offers || {};
+  const imageValue = Array.isArray(product.image) ? product.image[0] : product.image;
+  const image = metadata.get('og:image') || metadata.get('twitter:image') || (typeof imageValue === 'string' ? imageValue : imageValue?.url);
+  let imageUrl = null;
+  try {
+    const parsedImage = new URL(image, url);
+    if (parsedImage.protocol === 'https:' && !parsedImage.username && !parsedImage.password) imageUrl = parsedImage.href;
+  } catch { /* An invalid or absent image is optional. */ }
+  const priceValue = metadata.get('product:price:amount') || offer.price || offer.lowPrice;
+  const numericPrice = Number(String(priceValue ?? '').replace(',', '.'));
+  const titleTag = html.match(/<title\b[^>]*>([\s\S]*?)<\/title\s*>/i)?.[1]?.replace(/<[^>]+>/g, '');
+  const name = product.name || metadata.get('og:title') || metadata.get('twitter:title') || titleTag;
+  if (!name) throw new ApiError(422, 'Fant ikke produktinformasjon på siden. Kontroller at lenken peker til et produkt.');
+  return {
+    url: url.href,
+    name: htmlValue(String(name)).slice(0, 300),
+    description: htmlValue(String(product.description || metadata.get('og:description') || metadata.get('description') || '')).slice(0, 2000),
+    price: Number.isFinite(numericPrice) && numericPrice >= 0 ? numericPrice : null,
+    currency: metadata.get('product:price:currency') || offer.priceCurrency || null,
+    image: imageUrl,
+  };
+}
+
+async function readLimited(response, limit) {
+  if (!response.body?.getReader) {
+    const body = await response.text();
+    if (Buffer.byteLength(body) > limit) throw new ApiError(422, 'Produktsiden er for stor til å lese.');
+    return body;
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > limit) {
+        await reader.cancel();
+        throw new ApiError(422, 'Produktsiden er for stor til å lese.');
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
+}
+
 async function readBody(req) {
   if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) {
     throw new ApiError(415, 'Bruk Content-Type: application/json.');
@@ -135,6 +236,7 @@ export function createApp(options = {}) {
   const emailConfigured = Boolean(emailApiKey && emailFrom);
   const emailTimeoutMs = options.emailTimeoutMs ?? 8000;
   const fetchEmail = options.fetchEmail ?? globalThis.fetch;
+  const fetchProductPage = options.fetchProductPage ?? globalThis.fetch;
   const secureCookies = options.secureCookies ?? process.env.COOKIE_SECURE === 'true';
   const sessions = new Map();
   const attempts = new Map();
@@ -186,10 +288,29 @@ export function createApp(options = {}) {
     }
     return ticket;
   };
+  const readProductPage = async (value) => {
+    const url = productPageUrl(value);
+    try {
+      const response = await fetchProductPage(url.href, {
+        redirect: 'manual', signal: AbortSignal.timeout(5000),
+        headers: { Accept: 'text/html' },
+      });
+      if (!response.ok || response.status >= 300) throw new ApiError(422, 'Kunne ikke hente produktsiden. Kontroller lenken og prøv igjen.');
+      if (!/^text\/html\b/i.test(response.headers.get('content-type') || '')) {
+        throw new ApiError(422, 'Lenken peker ikke til en produktside.');
+      }
+      const html = await readLimited(response, 1024 * 1024);
+      return productFromHtml(html, url);
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new ApiError(422, 'Kunne ikke hente produktinformasjonen. Kontroller lenken og prøv igjen.');
+    }
+  };
 
   async function api(req, res, pathname) {
     const method = req.method;
     const known = ['/api/session', '/api/login', '/api/logout', '/api/workspace', '/api/tickets'].includes(pathname)
+      || pathname === '/api/products/preview'
       || /^\/api\/tickets\/[a-zA-Z0-9_-]{1,100}(?:\/messages)?$/.test(pathname);
     if (!known) throw new ApiError(404, 'Ukjent API-endepunkt.');
     const allowed = pathname === '/api/session' || pathname === '/api/workspace' ? ['GET']
@@ -255,8 +376,12 @@ export function createApp(options = {}) {
       });
     }
     const body = await readBody(req);
+    if (pathname === '/api/products/preview') {
+      checkFields(body, ['url']);
+      return json(res, 200, { product: await readProductPage(body.url) });
+    }
     if (pathname === '/api/tickets') {
-      checkFields(body, ['productId', 'subject', 'description', 'channel', 'dueDate', 'ambassadorId']);
+      checkFields(body, ['productId', 'productUrl', 'subject', 'description', 'channel', 'dueDate', 'ambassadorId']);
       const productId = text(body.productId, 'Produkt', 100);
       const product = state.products.find((item) => item.id === productId && item.available);
       if (!product) throw new ApiError(400, 'Velg et tilgjengelig produkt.');
@@ -273,10 +398,12 @@ export function createApp(options = {}) {
       const dueDate = body.dueDate === undefined ? null : dateValue(body.dueDate);
       const assigneeId = state.users.find((item) => item.role === 'employee')?.id;
       if (!assigneeId) throw new ApiError(409, 'Ingen medarbeider er tilgjengelig.');
+      const productSnapshot = body.productUrl === undefined ? null : await readProductPage(body.productUrl);
       const now = new Date().toISOString();
       const ticket = {
         id: randomUUID(), number: Math.max(1000, ...state.tickets.map((item) => item.number)) + 1,
-        subject, description, productId, ambassadorId, assigneeId, status: 'requested', channel: body.channel,
+        subject, description, productId, productUrl: productSnapshot?.url ?? null, productSnapshot,
+        ambassadorId, assigneeId, status: 'requested', channel: body.channel,
         dueDate, createdAt: now, updatedAt: now, messages: [],
       };
       commit({ ...state, tickets: [...state.tickets, ticket] });
