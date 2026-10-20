@@ -3,7 +3,7 @@
 A Norwegian-language ambassador CRM for Ølbrygging AS. This standalone local demo includes:
 
 - An illustrated, searchable product catalogue with category filters.
-- Promotion requests with product, idea, channel, and publication date.
+- Promotion requests with a link to the olbrygging.no product and its current name, price, image, and description, plus idea, channel, and publication date.
 - Ambassador-specific collaboration lists and progress tracking.
 - Employee review, approval, assignment, deadlines, and completion.
 - Persistent ticket conversations, email drafts, and optional outbound email notifications.
@@ -28,11 +28,11 @@ Open **http://127.0.0.1:3000**. Use the demo-role buttons or log in with:
 | Second ambassador | `sara@olbrygging.example` | `BrewTogether!2026` |
 | Second employee | `marius@olbrygging.example` | `BrewTogether!2026` |
 
-These are public **demo credentials**, not real accounts. All products, prices, people, and conversations are fictional examples, not a live olbrygging.no integration.
+These are public **demo credentials**, not real accounts. Catalogue products, people, and conversations are fictional examples. When creating a ticket, provide a product page URL from `www.olbrygging.no` to fetch product details for the ticket; this does not make the example catalogue or ticket workflow a live commerce integration.
 
 ### Try the workflow
 
-1. Log in as an ambassador, select a product, and submit a promotion idea.
+1. Log in as an ambassador, select a catalogue product, provide its `www.olbrygging.no` product-page URL, and submit a promotion idea. Product details are fetched from that page and linked from the ticket.
 2. Log out and log in as an employee. Open the request, select a contact person, and approve it.
 3. As the ambassador, move the approved collaboration to **Pågår**, exchange messages with the contact person, and submit it **Til gjennomgang**.
 4. The employee can complete the collaboration or return it for further work.
@@ -79,7 +79,7 @@ npm test
 npm run check
 ```
 
-Tests use Node's built-in test runner and temporary storage. They cover authentication, permissions, persistence, ticket creation, status/assignment updates, conversations, email delivery failure, invalid requests, account-switch refresh races, and draft preservation during metadata saves.
+Tests use Node's built-in test runner and temporary storage. They cover authentication, permissions, persistence, ticket creation, product URL validation and metadata, status/assignment updates, conversations, email delivery failure, invalid requests, account-switch refresh races, and draft preservation during metadata saves.
 
 ## Deployment boundary
 

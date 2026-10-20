@@ -15,7 +15,13 @@ async function fixture(t, options = {}) {
   const publicDir = resolve(directory, 'public');
   mkdirSync(publicDir);
   writeFileSync(resolve(publicDir, 'index.html'), '<!doctype html><title>Demo</title>');
-  const app = createApp({ dataFile, publicDir, ...options });
+  const app = createApp({
+    dataFile, publicDir,
+    fetchProductPage: async () => new Response('<html><head><meta property="og:title" content="Test product"></head></html>', {
+      headers: { 'content-type': 'text/html' },
+    }),
+    ...options,
+  });
   app.listen(0, '127.0.0.1');
   await once(app, 'listening');
   const base = `http://127.0.0.1:${app.address().port}`;
@@ -85,7 +91,7 @@ test('ticket creation, employee approval and ambassador workflow persist across 
   const staff = await login('employee@olbrygging.example');
   const created = await call('/api/tickets', {
     method: 'POST', cookie,
-    body: { productId: 'fjord-pale', subject: 'Mitt neste brygg', description: 'En ny bildeserie om bryggedagen.', channel: 'Instagram', dueDate: '2026-11-03' },
+    body: { productId: 'fjord-pale', productUrl: 'https://www.olbrygging.no/produkt/demo', subject: 'Mitt neste brygg', description: 'En ny bildeserie om bryggedagen.', channel: 'Instagram', dueDate: '2026-11-03' },
   });
   assert.equal(created.status, 201);
   const { ticket } = created.body;
@@ -119,6 +125,63 @@ test('ticket creation, employee approval and ambassador workflow persist across 
   assert.equal(persistedTicket.assigneeId, 'marius');
 });
 
+test('product page links are restricted and fetched product details are attached to tickets', async (t) => {
+  let html = `<!doctype html><html><head>
+    <meta property="og:image" content="/images/produkt.jpg">
+    <script type="application/ld+json">{"@type":"Product","name":"Humle &amp; malt","description":"Friske råvarer","image":"/images/humle.jpg","offers":{"price":"129.50","priceCurrency":"NOK"}}</script>
+    </head><body></body></html>`;
+  const productHtml = html;
+  let fetched;
+  const { call, login } = await fixture(t, {
+    fetchProductPage: async (url, options) => {
+      fetched = { url, options };
+      return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+    },
+  });
+  const cookie = await login();
+  for (const url of ['http://www.olbrygging.no/produkt/a', 'https://evil.example/produkt/a', 'https://www.olbrygging.no/']) {
+    assert.equal((await call('/api/products/preview', { method: 'POST', cookie, body: { url } })).status, 400);
+  }
+  assert.equal(fetched, undefined);
+  const preview = await call('/api/products/preview', {
+    method: 'POST', cookie, body: { url: 'https://www.olbrygging.no/produkt/a#detaljer' },
+  });
+  assert.equal(preview.status, 200);
+  assert.deepEqual(preview.body.product, {
+    url: 'https://www.olbrygging.no/produkt/a',
+    name: 'Humle & malt',
+    description: 'Friske råvarer',
+    price: 129.5,
+    currency: 'NOK',
+    image: 'https://www.olbrygging.no/images/produkt.jpg',
+  });
+  assert.equal(fetched.options.redirect, 'manual');
+  assert.equal(fetched.options.headers.Accept, 'text/html');
+  html = '<!doctype html><html><head><meta property="og:title" content="Produkt uten detaljer"></head></html>';
+  const missingDetails = await call('/api/products/preview', {
+    method: 'POST', cookie, body: { url: 'https://www.olbrygging.no/produkt/uten-detaljer' },
+  });
+  assert.equal(missingDetails.body.product.price, null);
+  assert.equal(missingDetails.body.product.image, null);
+  html = '<!doctype html><html><head><script type="application/ld+json">{"@type":"Product","name":"Gratis produkt","offers":{"price":0}}</script></head></html>';
+  const freeProduct = await call('/api/products/preview', {
+    method: 'POST', cookie, body: { url: 'https://www.olbrygging.no/produkt/gratis' },
+  });
+  assert.equal(freeProduct.body.product.price, 0);
+  html = productHtml;
+  const created = await call('/api/tickets', {
+    method: 'POST', cookie,
+    body: {
+      productId: 'hop-citra', productUrl: 'https://www.olbrygging.no/produkt/a',
+      subject: 'En råvareguide', description: 'Presentere produktet.', channel: 'Instagram',
+    },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.ticket.productUrl, 'https://www.olbrygging.no/produkt/a');
+  assert.equal(created.body.ticket.productSnapshot.name, 'Humle & malt');
+  assert.equal(created.body.ticket.productSnapshot.price, 129.5);
+});
+
 test('cross-ambassador access, protected fields, and explicit staff creation', async (t) => {
   const { call, login } = await fixture(t);
   const cookie = await login();
@@ -128,7 +191,7 @@ test('cross-ambassador access, protected fields, and explicit staff creation', a
     ['/api/tickets/does-not-exist/messages', 'POST', { body: 'Hallo' }],
   ]) assert.equal((await call(path, { method, cookie, body })).status, 404);
   assert.equal((await call('/api/tickets/ticket-1002', { method: 'PATCH', cookie, body: { assigneeId: 'nora' } })).status, 403);
-  const body = { productId: 'malt', subject: 'En maltguide', description: 'Dette er en ny guide.', channel: 'Blogg' };
+  const body = { productId: 'malt', productUrl: 'https://www.olbrygging.no/produkt/demo', subject: 'En maltguide', description: 'Dette er en ny guide.', channel: 'Blogg' };
   assert.equal((await call('/api/tickets', { method: 'POST', cookie, body: { ...body, ambassadorId: 'sara' } })).status, 403);
   const staff = await login('employee@olbrygging.example');
   assert.equal((await call('/api/tickets', { method: 'POST', cookie: staff, body })).status, 400);
@@ -193,12 +256,13 @@ test('email success targets opposite participant, timeout preserves message', as
 test('JSON, dates, lengths, enums, methods, body limits and same-origin validation', async (t) => {
   const { call, login } = await fixture(t);
   const cookie = await login();
-  const base = { productId: 'malt', subject: 'Ny forespørsel', description: 'En liten beskrivelse.', channel: 'Instagram' };
+  const base = { productId: 'malt', productUrl: 'https://www.olbrygging.no/produkt/demo', subject: 'Ny forespørsel', description: 'En liten beskrivelse.', channel: 'Instagram' };
   for (const change of [
     { subject: '' }, { subject: 'x'.repeat(161) }, { description: 'x'.repeat(5001) },
     { productId: 'missing' }, { channel: 'Facebook' }, { dueDate: '2026-02-30' },
     { dueDate: 'not-a-date' }, { dueDate: '2026-10-20T12:00:00Z' }, { status: 'approved' },
   ]) assert.equal((await call('/api/tickets', { method: 'POST', cookie, body: { ...base, ...change } })).status, 400);
+  assert.equal((await call('/api/tickets', { method: 'POST', cookie, body: { ...base, productUrl: undefined } })).status, 400);
   assert.equal((await call('/api/tickets', { method: 'POST', cookie, raw: '{' })).status, 400);
   assert.equal((await call('/api/tickets', { method: 'POST', cookie, body: [] })).status, 400);
   assert.equal((await call('/api/tickets', { method: 'POST', cookie, body: base, headers: { 'content-type': 'text/plain' } })).status, 415);
@@ -248,7 +312,7 @@ test('concurrent creation preserves all writes with unique ticket numbers', asyn
   const cookie = await login();
   const responses = await Promise.all(Array.from({ length: 6 }, (_, index) => call('/api/tickets', {
     method: 'POST', cookie,
-    body: { productId: 'malt', subject: `Forespørsel ${index}`, description: 'Test av samtidige forespørsler.', channel: 'Blogg' },
+    body: { productId: 'malt', productUrl: 'https://www.olbrygging.no/produkt/demo', subject: `Forespørsel ${index}`, description: 'Test av samtidige forespørsler.', channel: 'Blogg' },
   })));
   assert.ok(responses.every((response) => response.status === 201));
   assert.equal(new Set(responses.map((response) => response.body.ticket.number)).size, 6);

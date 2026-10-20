@@ -1,4 +1,4 @@
-const CACHE = 'olbrygging-shell-v1';
+const CACHE = 'olbrygging-shell-v2';
 const SHELL = ['/', '/index.html', '/styles.css', '/app.js', '/pwa.js', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (event) => {

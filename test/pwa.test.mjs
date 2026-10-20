@@ -22,7 +22,7 @@ function worker() {
     },
     caches: {
       open: async () => cache,
-      keys: async () => ['olbrygging-shell-v0', 'olbrygging-shell-v1', 'unrelated-cache'],
+      keys: async () => ['olbrygging-shell-v0', 'olbrygging-shell-v2', 'unrelated-cache'],
       delete: async (name) => { removed.push(name); },
     },
     fetch: async (request) => { requests.push(request); return { network: true }; },

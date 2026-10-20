@@ -27,10 +27,17 @@ const escape = (value = '') => String(value ?? '').replace(/[&<>"']/g, (char) =>
 const initials = (name = '') => name.split(' ').map((part) => part[0]).slice(0, 2).join('');
 const person = (id) => state.users.find((user) => user.id === id);
 const product = (id) => state.products.find((item) => item.id === id);
+const ticketProduct = (ticket) => ticket.productSnapshot || product(ticket.productId);
+const productLink = (value) => {
+  try {
+    const url = new URL(value || '');
+    return url.protocol === 'https:' && url.hostname === 'www.olbrygging.no' ? url.href : '';
+  } catch { return ''; }
+};
 const employee = () => state.user?.role === 'employee';
 const active = (ticket) => !['completed', 'declined'].includes(ticket.status);
 const date = (value, options = { day: 'numeric', month: 'short' }) => value ? new Intl.DateTimeFormat('nb-NO', options).format(new Date(value)) : 'Ingen frist';
-const price = (value) => new Intl.NumberFormat('nb-NO', { maximumFractionDigits: 0 }).format(value);
+const price = (value) => new Intl.NumberFormat('nb-NO', { maximumFractionDigits: 2 }).format(value);
 const avatar = (user, extra = '') => `<span class="avatar ${extra}" aria-hidden="true">${escape(initials(user?.name || '?'))}</span>`;
 const pill = (status) => `<span class="pill ${escape(status)}">${escape(statuses[status] || status)}</span>`;
 const brand = () => '<div class="brand"><span class="brand-mark">ø</span><div><strong>ØLBRYGGING</strong><small>Ambassadørportalen</small></div></div>';
@@ -86,6 +93,18 @@ function illustration(item, index = 0) {
   return `<svg viewBox="0 0 260 180" role="img" aria-label="${escape(item?.name || 'Bryggeprodukter')}"><rect width="260" height="180" fill="${background}"/>${drawing}</svg>`;
 }
 
+function productVisual(item, index = 0) {
+  return item?.image
+    ? `<img class="product-photo" src="${escape(item.image)}" alt="${escape(item.name || 'Produktbilde')}" loading="lazy" referrerpolicy="no-referrer">`
+    : illustration(item, index);
+}
+
+function productPreview(item) {
+  const preview = document.querySelector('#product-preview');
+  if (!preview) return;
+  preview.innerHTML = `<div class="request-product"><div class="mini-product">${productVisual(item)}</div><div><h3>${escape(item.name)}</h3><p>${item.price === null ? 'Pris ikke oppgitt' : `${price(item.price)} ${escape(item.currency || 'NOK')}`} · Hentet fra nettbutikken</p></div></div>${item.description ? `<p class="product-preview-description">${escape(item.description)}</p>` : ''}`;
+}
+
 function renderLogin(error = '') {
   app.innerHTML = `<main class="login">
     <section class="login-story">${brand()}<h1>Gode råvarer.<br>Enda bedre<br><em>samarbeid.</em></h1><p>For deg som deler bryggeglede. Velkommen til fellesskapet vårt.</p><div class="login-art">${illustration({ category: 'Ølsett', name: 'Illustrert bryggesett' })}</div><div class="story-foot">${icon('leaf')} Sammen skaper vi bryggeglede · Ølbrygging AS</div></section>
@@ -122,7 +141,7 @@ async function loadWorkspace() {
 function matchingTickets() {
   const query = state.query.toLocaleLowerCase('nb-NO');
   return state.tickets.filter((ticket) => {
-    const text = [ticket.subject, ticket.number, product(ticket.productId)?.name, person(ticket.ambassadorId)?.name].join(' ').toLocaleLowerCase('nb-NO');
+    const text = [ticket.subject, ticket.number, ticketProduct(ticket)?.name, person(ticket.ambassadorId)?.name].join(' ').toLocaleLowerCase('nb-NO');
     return text.includes(query) && (state.filter === 'Alle' || ticket.status === state.filter);
   }).sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
 }
@@ -184,7 +203,16 @@ function empty(message) {
 
 function ticketTable(tickets) {
   if (!tickets.length) return empty('Ingen samarbeid her ennå. Finn et produkt i katalogen for å komme i gang.');
-  return `<div class="table-wrap"><table><thead><tr><th>SAMARBEID / PRODUKT</th><th>STATUS</th><th class="due-column">FRIST</th><th><span class="sr-only">Åpne</span></th></tr></thead><tbody>${tickets.map((ticket, index) => `<tr data-ticket="${escape(ticket.id)}"><td><div class="ticket-cell"><div class="mini-product">${illustration(product(ticket.productId), index)}</div><div><strong>${escape(product(ticket.productId)?.name || ticket.subject)}</strong><small>#${escape(ticket.number)} · ${employee() ? escape(person(ticket.ambassadorId)?.name) : escape(ticket.channel)}</small></div></div></td><td>${pill(ticket.status)}</td><td class="due due-column">${date(ticket.dueDate)}</td><td><button class="row-arrow" data-ticket="${escape(ticket.id)}" aria-label="Åpne ${escape(ticket.subject)}">${icon('chevron')}</button></td></tr>`).join('')}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>SAMARBEID / PRODUKT</th><th>STATUS</th><th class="due-column">FRIST</th><th><span class="sr-only">Åpne</span></th></tr></thead><tbody>${tickets.map((ticket, index) => {
+    const item = ticketProduct(ticket);
+    const href = productLink(ticket.productUrl);
+    const name = item?.name || ticket.subject;
+    const details = item && [
+      item.price !== null && item.price !== undefined ? `${price(item.price)} ${escape(item.currency || 'NOK')}` : '',
+      item.description ? escape(item.description) : '',
+    ].filter(Boolean).join(' · ');
+    return `<tr data-ticket="${escape(ticket.id)}"><td><div class="ticket-cell"><div class="mini-product">${productVisual(item, index)}</div><div><strong>${href ? `<a class="product-title-link" href="${escape(href)}" target="_blank" rel="noopener noreferrer">${escape(name)}</a>` : escape(name)}</strong><small>#${escape(ticket.number)} · ${employee() ? escape(person(ticket.ambassadorId)?.name) : escape(ticket.channel)}</small>${details ? `<small class="ticket-product-details">${details}</small>` : ''}</div></div></td><td>${pill(ticket.status)}</td><td class="due due-column">${date(ticket.dueDate)}</td><td><button class="row-arrow" data-ticket="${escape(ticket.id)}" aria-label="Åpne ${escape(ticket.subject)}">${icon('chevron')}</button></td></tr>`;
+  }).join('')}</tbody></table></div>`;
 }
 
 function ticketsPage() {
@@ -229,7 +257,8 @@ function requestProduct(id) {
   const item = product(id);
   if (!item || !item.available) return;
   modalTicketId = null;
-  showModal(`${modalHead('La oss lage noe bra sammen.')}<form id="request-form" class="modal-body" data-product-id="${escape(id)}"><div class="request-product"><div class="mini-product">${illustration(item)}</div><div><h3>${escape(item.name)}</h3><p>${escape(item.category)} · ${price(item.price)} kr veiledende</p></div></div>
+  showModal(`${modalHead('La oss lage noe bra sammen.')}<form id="request-form" class="modal-body" data-product-id="${escape(id)}"><div class="request-product"><div class="mini-product">${productVisual(item)}</div><div><h3>${escape(item.name)}</h3><p>${escape(item.category)} · ${price(item.price)} kr veiledende</p></div></div>
+    <div class="field"><label for="product-url">Lenke til produktet i nettbutikken</label><div class="product-url-row"><input id="product-url" name="productUrl" type="url" required maxlength="2000" placeholder="https://www.olbrygging.no/produkt/…"><button class="secondary" type="button" data-action="preview-product">Hent info</button></div><small class="muted">Produktnavn, pris, bilde og beskrivelse hentes fra olbrygging.no.</small></div><div id="product-preview" aria-live="polite"><p class="small muted">Lim inn produktlenken og velg «Hent info» for å se detaljene.</p></div>
     ${employee() ? `<div class="field"><label for="ambassadorId">Ambassadør</label><select id="ambassadorId" name="ambassadorId" required>${state.users.filter((user) => user.role === 'ambassador').map((user) => `<option value="${escape(user.id)}">${escape(user.name)}</option>`).join('')}</select></div>` : ''}
     <div class="field"><label for="subject">Navn på samarbeidet</label><input id="subject" name="subject" required maxlength="150" value="${escape(item.name)} – ${employee() ? 'nytt samarbeid' : 'min bryggeopplevelse'}"></div>
     <div class="form-row"><div class="field"><label for="channel">Hvor vil du dele?</label><select id="channel" name="channel">${['Instagram', 'TikTok', 'YouTube', 'Blogg', 'Annet'].map((channel) => `<option>${channel}</option>`).join('')}</select></div><div class="field"><label for="dueDate">Ønsket publiseringsdato</label><input id="dueDate" name="dueDate" type="date" required min="${new Date().toISOString().slice(0, 10)}"></div></div>
@@ -248,7 +277,7 @@ function ticketDetail(id, preserveDraft = '') {
   const mailto = `mailto:${encodeURIComponent(contact?.email || '')}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(emailBody)}`;
   showModal(`${modalHead(escape(ticket.subject), `SAMARBEID #${escape(ticket.number)} · ${escape(ticket.channel)}`)}
     <div class="drawer-scroll"><div class="ticket-meta"><div><label for="ticket-status">Status</label><select id="ticket-status" data-update="status" ${allowedStatuses.length === 1 ? 'disabled' : ''}>${allowedStatuses.map((status) => `<option value="${status}" ${ticket.status === status ? 'selected' : ''}>${statuses[status]}</option>`).join('')}</select></div><div><label for="ticket-assignee">Kontaktperson</label>${employee() ? `<select id="ticket-assignee" data-update="assigneeId">${state.users.filter((user) => user.role === 'employee').map((user) => `<option value="${escape(user.id)}" ${ticket.assigneeId === user.id ? 'selected' : ''}>${escape(user.name)}</option>`).join('')}</select>` : `<p>${escape(person(ticket.assigneeId)?.name || 'Ikke tildelt')}</p>`}</div><div><label for="ticket-due">Publiseringsfrist</label>${employee() ? `<input id="ticket-due" type="date" data-update="dueDate" value="${escape(ticket.dueDate?.slice(0, 10) || '')}">` : `<p>${date(ticket.dueDate, { day: 'numeric', month: 'long', year: 'numeric' })}</p>`}</div></div>
-    <div class="conversation"><h3>Om samarbeidet ${pill(ticket.status)}</h3><div class="request-product"><div class="mini-product">${illustration(product(ticket.productId))}</div><div><h3>${escape(product(ticket.productId)?.name)}</h3><p>${escape(person(ticket.ambassadorId)?.name)} · ${escape(ticket.channel)}</p></div></div><p class="ticket-description">${escape(ticket.description)}</p></div>
+    <div class="conversation"><h3>Om samarbeidet ${pill(ticket.status)}</h3><div class="request-product"><div class="mini-product">${productVisual(ticketProduct(ticket))}</div><div><h3>${escape(ticketProduct(ticket)?.name || 'Produkt')}</h3><p>${escape(person(ticket.ambassadorId)?.name)} · ${escape(ticket.channel)}${ticket.productSnapshot?.price !== null && ticket.productSnapshot?.price !== undefined ? ` · ${price(ticket.productSnapshot.price)} ${escape(ticket.productSnapshot.currency || 'NOK')}` : ''}</p>${productLink(ticket.productUrl) ? `<a class="ticket-product-link" href="${escape(productLink(ticket.productUrl))}" target="_blank" rel="noopener noreferrer">Se produktet i nettbutikken ${icon('arrow')}</a>` : ''}</div></div>${ticket.productSnapshot?.description ? `<p class="ticket-description">${escape(ticket.productSnapshot.description)}</p>` : ''}<p class="ticket-description">${escape(ticket.description)}</p></div>
     <section class="conversation"><h3>Samtalen <span>${ticket.messages.length} meldinger</span></h3><div id="message-list">${ticket.messages.map((message) => {
       const author = person(message.authorId);
       return `<article class="message ${message.authorId === state.user.id ? 'own' : ''}">${avatar(author, author?.role === 'employee' ? 'green' : '')}<div class="message-content"><div class="message-label"><strong>${escape(author?.name || 'Ølbrygging-teamet')}</strong><time datetime="${escape(message.createdAt)}">${date(message.createdAt, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</time></div><div class="bubble">${escape(message.body)}</div>${message.emailStatus === 'sent' ? '<span class="email-state">Også sendt på e-post</span>' : message.emailStatus === 'failed' ? '<span class="email-state">Lagret i portalen · E-post kunne ikke sendes</span>' : ''}</div></article>`;
@@ -292,6 +321,23 @@ document.addEventListener('click', async (event) => {
   if (button.dataset.product) return requestProduct(button.dataset.product);
   if (button.dataset.ticket) return ticketDetail(button.dataset.ticket);
   if (button.dataset.action === 'close') return closeModal();
+  if (button.dataset.action === 'preview-product') {
+    const form = button.closest('#request-form');
+    const field = form?.querySelector('[name=productUrl]');
+    if (!field?.value) return field?.reportValidity();
+    const value = field.value;
+    const preview = form.querySelector('#product-preview');
+    button.disabled = true;
+    try {
+      const { product: details } = await api('/products/preview', { method: 'POST', body: { url: value } });
+      if (form.isConnected && field.value === value) productPreview(details);
+    } catch (error) {
+      if (field.value === value && preview) preview.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+    return;
+  }
   if (button.dataset.action === 'help') return help();
   if (button.dataset.action === 'contact') {
     const ticket = [...state.tickets].filter(active).sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))[0];
