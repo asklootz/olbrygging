@@ -6,14 +6,25 @@
   "type": "module",
   "main": "server.mjs",
   "scripts": {
-    "start": "node server.mjs",
+    "start": "node --env-file-if-exists=.env server.mjs",
+    "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
+    "pocketbase": "pocketbase --pb-version 0.40.6",
+    "pocketbase:install": "pocketbase --pb-version 0.40.6 --version",
+    "pocketbase:start": "pocketbase --pb-version 0.40.6 serve --http=127.0.0.1:8090 --hooksDir=pb_hooks --migrationsDir=pb_migrations",
+    "test:integration": "npm run pocketbase:install && node --test test/pocketbase-backend.test.mjs",
     "test": "node --test",
-    "check": "node --check server.mjs && node --check api.mjs && node --check supabase.mjs && node --check public/app.js"
+    "check": "node --check server.mjs && node --check api.mjs && node --check pocketbase.mjs && node --check public/app.js && node --check scripts/dev.mjs"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.9"
   },
   "keywords": [],
   "author": "",
-  "license": "UNLICENSED"
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@fadlee/pocketbase-bin": "1.0.1"
+  },
+  "overrides": {
+    "adm-zip": "0.6.1"
+  }
 }

@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, realpat
 import { dirname, resolve, sep, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ApiError, text, dateValue, checkFields, readBody } from './api.mjs';
-import { createSupabaseApi } from './supabase.mjs';
+import { createPocketbaseApi } from './pocketbase.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const STATUSES = ['requested', 'approved', 'in_progress', 'review', 'completed', 'declined'];
@@ -90,16 +90,16 @@ export function createApp(options = {}) {
   const emailTimeoutMs = options.emailTimeoutMs ?? 8000;
   const fetchEmail = options.fetchEmail ?? globalThis.fetch;
   const secureCookies = options.secureCookies ?? process.env.COOKIE_SECURE === 'true';
-  const supabase = createSupabaseApi({
-    url: options.supabaseUrl ?? process.env.SUPABASE_URL,
-    key: options.supabaseKey ?? (process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY),
-    serviceKey: options.supabaseServiceKey ?? process.env.SUPABASE_SERVICE_ROLE_KEY,
-    fetch: options.fetchSupabase ?? globalThis.fetch,
-    timeoutMs: options.supabaseTimeoutMs ?? 8000,
+  const pocketbase = createPocketbaseApi({
+    url: options.pocketbaseUrl ?? process.env.POCKETBASE_URL,
+    adminEmail: options.pocketbaseAdminEmail ?? process.env.POCKETBASE_ADMIN_EMAIL,
+    adminPassword: options.pocketbaseAdminPassword ?? process.env.POCKETBASE_ADMIN_PASSWORD,
+    fetch: options.fetchPocketbase ?? globalThis.fetch,
+    timeoutMs: options.pocketbaseTimeoutMs ?? 8000,
     secureCookies, emailApiKey, emailFrom, emailTimeoutMs, fetchEmail,
   });
-  if (process.env.NODE_ENV === 'production' && (!supabase || !secureCookies)) {
-    throw new Error('Production requires Supabase and COOKIE_SECURE=true.');
+  if (process.env.NODE_ENV === 'production' && (!pocketbase || !secureCookies)) {
+    throw new Error('Production requires PocketBase and COOKIE_SECURE=true.');
   }
   const sessions = new Map();
   const attempts = new Map();
@@ -112,7 +112,7 @@ export function createApp(options = {}) {
     renameSync(pending, dataFile);
   };
   let state;
-  if (supabase) {
+  if (pocketbase) {
     state = null;
   } else if (existsSync(dataFile)) {
     state = JSON.parse(readFileSync(dataFile, 'utf8'));
@@ -172,9 +172,9 @@ export function createApp(options = {}) {
         throw new ApiError(403, 'Forespørselen må komme fra samme nettsted.');
       }
     }
-    if (pathname === '/api/config') return json(res, 200, { demoMode: !supabase });
-    if (supabase) {
-      const { status, body } = await supabase(req, res, pathname);
+    if (pathname === '/api/config') return json(res, 200, { demoMode: !pocketbase });
+    if (pocketbase) {
+      const { status, body } = await pocketbase(req, res, pathname);
       return json(res, status, body);
     }
     const user = currentUser(req);
@@ -341,7 +341,7 @@ export function createApp(options = {}) {
       const parsed = new URL(req.url, 'http://localhost');
       const pathname = decodeURIComponent(parsed.pathname);
       if (pathname === '/api' || pathname.startsWith('/api/')) {
-        if (supabase || req.method === 'GET') await api(req, res, pathname);
+        if (pocketbase || req.method === 'GET') await api(req, res, pathname);
         else {
           const operation = mutationQueue.then(() => api(req, res, pathname));
           mutationQueue = operation.catch(() => {});
@@ -360,5 +360,5 @@ export function createApp(options = {}) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT ?? 3000);
   const host = process.env.HOST ?? '127.0.0.1';
-  createApp().listen(port, host, () => console.log(`Ølbrygging demo: http://${host}:${port}`));
+  createApp().listen(port, host, () => console.log(`Ølbrygging: http://${host}:${port}`));
 }
