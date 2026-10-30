@@ -4,3 +4,9 @@ data/
 .env
 .env.*
 !.env.example
+/pocketbase
+/pocketbase.exe
+/pocketbase.zip
+/.pocketbase-version
+/pb_data/
+/pb_logs/

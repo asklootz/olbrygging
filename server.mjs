@@ -3,13 +3,14 @@ import { randomBytes, randomUUID, scryptSync, timingSafeEqual, createHash } from
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, realpathSync, statSync } from 'node:fs';
 import { dirname, resolve, sep, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ApiError, text, dateValue, checkFields, readBody } from './api.mjs';
+import { createPocketbaseApi } from './pocketbase.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const STATUSES = ['requested', 'approved', 'in_progress', 'review', 'completed', 'declined'];
 const CHANNELS = ['Instagram', 'TikTok', 'YouTube', 'Blogg', 'Annet'];
 const COOKIE = 'olbrygging_session';
 const SESSION_MS = 1000 * 60 * 60 * 12;
-const MAX_BODY = 24 * 1024;
 const safeUser = ({ id, name, email, role }) => ({ id, name, email, role });
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 
@@ -242,6 +243,17 @@ export function createApp(options = {}) {
   const fetchEmail = options.fetchEmail ?? globalThis.fetch;
   const fetchProductPage = options.fetchProductPage ?? globalThis.fetch;
   const secureCookies = options.secureCookies ?? process.env.COOKIE_SECURE === 'true';
+  const pocketbase = createPocketbaseApi({
+    url: options.pocketbaseUrl ?? process.env.POCKETBASE_URL,
+    adminEmail: options.pocketbaseAdminEmail ?? process.env.POCKETBASE_ADMIN_EMAIL,
+    adminPassword: options.pocketbaseAdminPassword ?? process.env.POCKETBASE_ADMIN_PASSWORD,
+    fetch: options.fetchPocketbase ?? globalThis.fetch,
+    timeoutMs: options.pocketbaseTimeoutMs ?? 8000,
+    secureCookies, emailApiKey, emailFrom, emailTimeoutMs, fetchEmail,
+  });
+  if (process.env.NODE_ENV === 'production' && (!pocketbase || !secureCookies)) {
+    throw new Error('Production requires PocketBase and COOKIE_SECURE=true.');
+  }
   const sessions = new Map();
   const attempts = new Map();
   let mutationQueue = Promise.resolve();
@@ -253,7 +265,9 @@ export function createApp(options = {}) {
     renameSync(pending, dataFile);
   };
   let state;
-  if (existsSync(dataFile)) {
+  if (pocketbase) {
+    state = null;
+  } else if (existsSync(dataFile)) {
     state = JSON.parse(readFileSync(dataFile, 'utf8'));
     if (state.version !== 1 || !['users', 'products', 'tickets'].every((key) => Array.isArray(state[key]))) {
       throw new Error('Unsupported workspace data format.');
@@ -313,11 +327,11 @@ export function createApp(options = {}) {
 
   async function api(req, res, pathname) {
     const method = req.method;
-    const known = ['/api/session', '/api/login', '/api/logout', '/api/workspace', '/api/tickets'].includes(pathname)
+    const known = ['/api/config', '/api/session', '/api/login', '/api/logout', '/api/workspace', '/api/tickets'].includes(pathname)
       || pathname === '/api/products/preview'
       || /^\/api\/tickets\/[a-zA-Z0-9_-]{1,100}(?:\/messages)?$/.test(pathname);
     if (!known) throw new ApiError(404, 'Ukjent API-endepunkt.');
-    const allowed = pathname === '/api/session' || pathname === '/api/workspace' ? ['GET']
+    const allowed = ['/api/config', '/api/session', '/api/workspace'].includes(pathname) ? ['GET']
       : /^\/api\/tickets\/[^/]+$/.test(pathname) ? ['PATCH'] : ['POST'];
     if (!allowed.includes(method)) {
       res.setHeader('Allow', allowed.join(', '));
@@ -329,6 +343,11 @@ export function createApp(options = {}) {
         || req.headers['sec-fetch-site'] === 'cross-site') {
         throw new ApiError(403, 'Forespørselen må komme fra samme nettsted.');
       }
+    }
+    if (pathname === '/api/config') return json(res, 200, { demoMode: !pocketbase });
+    if (pocketbase) {
+      const { status, body } = await pocketbase(req, res, pathname);
+      return json(res, status, body);
     }
     const user = currentUser(req);
     if (pathname === '/api/session') return json(res, 200, { user: user ? safeUser(user) : null });
@@ -500,7 +519,7 @@ export function createApp(options = {}) {
       const parsed = new URL(req.url, 'http://localhost');
       const pathname = decodeURIComponent(parsed.pathname);
       if (pathname === '/api' || pathname.startsWith('/api/')) {
-        if (req.method === 'GET') await api(req, res, pathname);
+        if (pocketbase || req.method === 'GET') await api(req, res, pathname);
         else {
           const operation = mutationQueue.then(() => api(req, res, pathname));
           mutationQueue = operation.catch(() => {});
@@ -519,5 +538,5 @@ export function createApp(options = {}) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT ?? 3000);
   const host = process.env.HOST ?? '127.0.0.1';
-  createApp().listen(port, host, () => console.log(`Ølbrygging demo: http://${host}:${port}`));
+  createApp().listen(port, host, () => console.log(`Ølbrygging: http://${host}:${port}`));
 }
