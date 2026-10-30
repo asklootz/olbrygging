@@ -114,6 +114,7 @@ function renderLogin(error = '') {
     <section class="login-story">${brand()}<h1>Gode råvarer.<br>Enda bedre<br><em>samarbeid.</em></h1><p>For deg som deler bryggeglede. Velkommen til fellesskapet vårt.</p><div class="login-art">${illustration({ category: 'Ølsett', name: 'Illustrert bryggesett' })}</div><div class="story-foot">${icon('leaf')} Sammen skaper vi bryggeglede · Ølbrygging AS</div></section>
     <section class="login-panel"><div class="login-box"><div class="eyebrow">Laget for bryggeglede</div><h2>Velkommen tilbake.</h2><p>Produktene, samarbeidene og samtalene dine.<br>Alt samlet på ett sted.</p>
     <form id="login-form"><div class="field"><label for="email">E-postadresse</label><input id="email" name="email" type="email" autocomplete="username" placeholder="deg@eksempel.no" required maxlength="254"></div><div class="field"><label for="password">Passord</label><input id="password" name="password" type="password" autocomplete="current-password" placeholder="Ditt passord" required maxlength="128"></div><p class="error" role="alert">${escape(error)}</p><button class="primary" type="submit">Logg inn ${icon('arrow')}</button></form>
+    <div class="apply-invitation"><span class="apply-symbol">${icon('leaf')}</span><div><h3>Vil du dele bryggeglede?</h3><p>Bli en del av ambassadørfellesskapet vårt.</p></div><button class="secondary" type="button" data-action="apply-ambassador">Søk om å bli ambassadør ${icon('arrow')}</button></div>
     ${state.demoMode ? `<div class="demo-box"><label>Ta en titt på portalen</label><p>Prøv med eksempeldata. Ingen ekte bestillinger eller e-poster sendes uten konfigurert e-posttjeneste.</p><div class="demo-actions"><button class="secondary" data-demo="ambassador">${icon('leaf')} Ambassadør</button><button class="secondary" data-demo="employee">${icon('bag')} Ansatt</button></div></div>` : ''}
     <p class="login-note">${state.demoMode ? 'Lokal demonstrasjon · Eksempelprodukter, ikke en live produktkatalog.<br>Bruk kun fiktive opplysninger i demoen.' : 'Bruk kontoen du har fått av Ølbrygging.<br>Kontakt administrator hvis du trenger tilgang eller nytt passord.'}</p></div></section></main>`;
 }
@@ -313,6 +314,66 @@ function modalHead(title, eyebrow = '') {
   return `<header class="modal-head"><div>${eyebrow ? `<div class="eyebrow">${eyebrow}</div>` : ''}<h2 id="modal-title">${title}</h2></div><button class="icon-button" data-action="close" aria-label="Lukk">${icon('close')}</button></header>`;
 }
 
+const socialPlatforms = [
+  ['instagram', 'Instagram', 'https://www.instagram.com/dinprofil'],
+  ['facebook', 'Facebook', 'https://www.facebook.com/dinprofil'],
+  ['tiktok', 'TikTok', 'https://www.tiktok.com/@dinprofil'],
+  ['twitter', 'X (Twitter)', 'https://x.com/dinprofil'],
+  ['bluesky', 'Bluesky', 'https://bsky.app/profile/dinprofil.bsky.social'],
+  ['youtube', 'YouTube', 'https://www.youtube.com/@dinprofil'],
+];
+
+function applyAmbassador() {
+  showModal(`${modalHead('Del bryggegleden med oss.', 'Bli ambassadør')}
+    <form id="ambassador-application-form" class="modal-body application-form">
+      <p>Fortell oss hvem du er og hvor du deler innhold. Vi vurderer søknaden og tar kontakt på e-post. Dette oppretter ikke en innloggingskonto.</p>
+      ${state.demoMode ? '<p class="application-notice">Dette er en lokal demo. Søknader kan bare sendes i portalen med PocketBase.</p>' : ''}
+      <fieldset><legend><span>01</span> Om deg</legend>
+        <div class="field"><label for="applicant-name">Fullt navn</label><input id="applicant-name" name="name" autocomplete="name" required maxlength="160" placeholder="Fornavn og etternavn"></div>
+        <div class="form-row"><div class="field"><label for="applicant-phone">Telefonnummer</label><input id="applicant-phone" name="phone" type="tel" autocomplete="tel" required maxlength="40" placeholder="+47 123 45 678"></div><div class="field"><label for="applicant-email">E-postadresse</label><input id="applicant-email" name="email" type="email" autocomplete="email" required maxlength="254" placeholder="deg@eksempel.no"></div></div>
+      </fieldset>
+      <fieldset><legend><span>02</span> Full adresse</legend>
+        <div class="field"><label for="applicant-address">Gateadresse og husnummer</label><input id="applicant-address" name="addressLine1" autocomplete="address-line1" required maxlength="200" placeholder="Bryggeveien 12"></div>
+        <div class="field"><label for="applicant-address2">Adresselinje 2 (valgfri)</label><input id="applicant-address2" name="addressLine2" autocomplete="address-line2" maxlength="200" placeholder="Leilighet, etasje eller c/o"></div>
+        <div class="form-row"><div class="field"><label for="applicant-postal">Postnummer</label><input id="applicant-postal" name="postalCode" autocomplete="postal-code" required maxlength="20" placeholder="0123"></div><div class="field"><label for="applicant-city">Poststed</label><input id="applicant-city" name="city" autocomplete="address-level2" required maxlength="100" placeholder="Oslo"></div></div>
+        <div class="form-row"><div class="field"><label for="applicant-region">Fylke / region (valgfri)</label><input id="applicant-region" name="region" autocomplete="address-level1" maxlength="100"></div><div class="field"><label for="applicant-country">Land</label><input id="applicant-country" name="country" autocomplete="country-name" required maxlength="100" value="Norge"></div></div>
+      </fieldset>
+      <fieldset><legend><span>03</span> Her finner vi deg</legend><p id="social-links-help" class="small muted">Legg inn lenkene til profilene dine. Feltene er valgfrie, men minst én profil er påkrevd.</p>
+        <div class="application-social-grid">${socialPlatforms.map(([key, label, placeholder]) => `<div class="field"><label for="applicant-social-${key}">${label}</label><input id="applicant-social-${key}" name="social_${key}" type="url" inputmode="url" maxlength="1000" placeholder="${placeholder}" aria-describedby="social-links-help"></div>`).join('')}</div>
+      </fieldset>
+      <div class="application-consent"><label class="check-label" for="applicant-terms"><input id="applicant-terms" name="termsAccepted" type="checkbox" required><span>Jeg godtar søknadsvilkårene og at opplysningene brukes til å vurdere og følge opp søknaden.</span></label><a href="/ambassador-terms.html" target="_blank" rel="noopener" class="terms-link">Les søknadsvilkårene og informasjon om personopplysninger (åpnes i ny fane)</a></div>
+      <p class="error" role="alert" tabindex="-1"></p><div class="modal-actions"><button class="secondary" type="button" data-action="close">Avbryt</button><button class="primary" type="submit" ${state.demoMode ? 'disabled' : ''}>Send søknad ${icon('arrow')}</button></div>
+    </form>`);
+}
+
+async function submitAmbassadorApplication(form, fields, button) {
+  if (button.disabled || !form.reportValidity()) return;
+  const body = Object.fromEntries(['name', 'phone', 'email', 'addressLine1', 'addressLine2', 'postalCode', 'city', 'region', 'country']
+    .map((key) => [key, String(fields.get(key) || '').trim()]));
+  body.socialLinks = Object.fromEntries(socialPlatforms.map(([key]) => [key, String(fields.get(`social_${key}`) || '').trim()]));
+  body.termsAccepted = fields.has('termsAccepted');
+  const error = form.querySelector('.error');
+  error.textContent = '';
+  if (!Object.values(body.socialLinks).some(Boolean)) {
+    error.textContent = 'Legg inn minst én sosial medieprofil.';
+    form.querySelector('#applicant-social-instagram').focus();
+    return;
+  }
+  button.disabled = true;
+  form.setAttribute('aria-busy', 'true');
+  try {
+    await api('/ambassador-applications', { method: 'POST', body });
+    // A delayed response must not replace another dialog or a signed-in view.
+    if (!form.isConnected) return;
+    showModal(`${modalHead('Takk for søknaden!', 'Søknaden er mottatt')}<div class="modal-body application-success"><span class="application-success-icon">${icon('check')}</span><p>Så hyggelig at du vil bli ambassadør. Vi vurderer opplysningene dine og tar kontakt på e-post.</p><p>Du får ikke tilgang til portalen før søknaden er godkjent og en konto er opprettet.</p><button class="primary" type="button" data-action="close">Tilbake til innlogging ${icon('arrow')}</button></div>`);
+  } catch (failure) {
+    if (form.isConnected) { error.textContent = failure.message; error.focus(); }
+  } finally {
+    button.disabled = false;
+    form.removeAttribute('aria-busy');
+  }
+}
+
 function requestProduct(id) {
   const item = product(id);
   if (!item || !item.available) return;
@@ -401,6 +462,7 @@ document.addEventListener('click', async (event) => {
     return;
   }
   if (button.dataset.action === 'close') return closeModal();
+  if (button.dataset.action === 'apply-ambassador') return applyAmbassador();
   if (button.dataset.action === 'preview-product') {
     const form = button.closest('#request-form');
     const field = form?.querySelector('[name=productUrl]');
@@ -438,11 +500,12 @@ document.addEventListener('click', async (event) => {
 
 document.addEventListener('submit', async (event) => {
   const form = event.target;
-  if (!['login-form', 'request-form', 'message-form', 'profile-form', 'article-form', 'damage-form', 'admin-create-form', 'settings-form'].includes(form.id) && !form.matches('.admin-user-form')) return;
+  if (!['login-form', 'ambassador-application-form', 'request-form', 'message-form', 'profile-form', 'article-form', 'damage-form', 'admin-create-form', 'settings-form'].includes(form.id) && !form.matches('.admin-user-form')) return;
   event.preventDefault();
   const fields = new FormData(form);
   const button = form.querySelector('[type=submit]');
   if (form.id === 'login-form') return login(fields.get('email'), fields.get('password'), button);
+  if (form.id === 'ambassador-application-form') return submitAmbassadorApplication(form, fields, button);
   if (form.id === 'settings-form') {
     const settings = { theme: fields.get('theme'), compact: fields.has('compact'), notifications: fields.has('notifications') };
     localStorage.setItem(`settings-${state.user.id}`, JSON.stringify(settings));

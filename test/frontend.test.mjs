@@ -57,6 +57,92 @@ test('demo login shortcuts appear only when the server enables demo mode', async
   assert.match(context.document.querySelector('#app').innerHTML, /Lokal demonstrasjon/);
 });
 
+test('sign-in offers a password-free ambassador application with full address and explicit consent', async () => {
+  const { context, run } = await frontend();
+  run('renderLogin();');
+  assert.match(context.document.querySelector('#app').innerHTML, /data-action="apply-ambassador"/);
+  context.capture = (html) => { context.applicationHtml = html; };
+  run('showModal = capture; applyAmbassador();');
+  const html = context.applicationHtml;
+  for (const name of ['name', 'phone', 'email', 'addressLine1', 'addressLine2', 'postalCode', 'city', 'region', 'country', 'social_instagram', 'social_facebook', 'social_tiktok', 'social_twitter', 'social_bluesky', 'social_youtube']) {
+    assert.ok(html.includes(`name="${name}"`));
+  }
+  for (const label of ['Instagram', 'Facebook', 'TikTok', 'X/Twitter', 'Bluesky', 'YouTube']) assert.ok(html.includes(`>${label}</label>`));
+  assert.match(html, /type="tel"/);
+  assert.match(html, /name="termsAccepted" type="checkbox" required/);
+  assert.ok(!html.includes('checked'));
+  assert.ok(!html.includes('type="password"'));
+  assert.match(html, /href="\/ambassador-terms.html"/);
+  assert.match(html, /minst én profil er påkrevd/i);
+  assert.match(html, /Send søknad/);
+  run('state.demoMode = true; applyAmbassador();');
+  assert.match(context.applicationHtml, /type="submit" disabled/);
+});
+
+test('application submits all separate social inputs without login/workspace calls and retains drafts on failure', async () => {
+  const { context, run } = await frontend();
+  const entries = {
+    name: ' Test Applicant ', phone: '+47 12345678', email: 'test@example.invalid',
+    addressLine1: 'Testveien 12', addressLine2: '', postalCode: '0123', city: 'Oslo', region: '', country: 'Norge',
+  };
+  const error = { textContent: '', focus() {} };
+  const form = {
+    isConnected: true, reportValidity: () => true,
+    querySelector: () => error, setAttribute() {}, removeAttribute() {},
+  };
+  const fields = {
+    get: (name) => name === 'social_instagram' ? ' https://www.instagram.com/test '
+      : name === 'social_youtube' ? 'https://www.youtube.com/@test' : entries[name],
+    has: (name) => name === 'termsAccepted',
+  };
+  context.form = form;
+  context.fields = fields;
+  context.button = { disabled: false };
+  const calls = [];
+  context.fetch = async (url, options) => {
+    calls.push({ url, body: JSON.parse(options.body) });
+    throw new TypeError('Network down');
+  };
+  context.fields = { ...fields, get: (name) => name.startsWith('social_') ? '' : fields.get(name) };
+  await run('submitAmbassadorApplication(form, fields, button)');
+  assert.match(error.textContent, /minst én sosial medieprofil/i);
+  assert.equal(calls.length, 0);
+  context.fields = fields;
+  await run('submitAmbassadorApplication(form, fields, button)');
+  assert.match(error.textContent, /Kontroller nettforbindelsen/);
+  assert.equal(entries.name, ' Test Applicant ');
+  assert.equal(context.button.disabled, false);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, '/api/ambassador-applications');
+  assert.deepEqual(calls[0].body.socialLinks, {
+    instagram: 'https://www.instagram.com/test', facebook: '', tiktok: '', twitter: '', bluesky: '', youtube: 'https://www.youtube.com/@test',
+  });
+  assert.equal(calls[0].body.name, 'Test Applicant');
+  assert.equal(calls[0].body.termsAccepted, true);
+  context.capture = (html) => { context.successHtml = html; };
+  run('showModal = capture;');
+  context.fetch = async (url) => {
+    assert.equal(url, '/api/ambassador-applications');
+    return { ok: true, json: async () => ({ submitted: true }) };
+  };
+  await run('submitAmbassadorApplication(form, fields, button)');
+  assert.match(context.successHtml, /Takk for søknaden/);
+  assert.equal(run('state.user'), null);
+});
+
+test('a late application response cannot replace a closed or switched dialog', async () => {
+  const { context, run } = await frontend();
+  context.form = {
+    isConnected: false, reportValidity: () => true,
+    querySelector: () => ({ textContent: '' }), setAttribute() {}, removeAttribute() {},
+  };
+  context.fields = { get: (name) => name === 'social_instagram' ? 'https://www.instagram.com/test' : '', getAll: () => [], has: () => true };
+  context.button = { disabled: false };
+  context.capture = () => { throw new Error('Must not replace the dialog'); };
+  run('showModal = capture;');
+  await run('submitAmbassadorApplication(form, fields, button)');
+});
+
 test('metadata saves preserve the latest draft, cursor and email selection', async () => {
   const { context, run, elements, listeners } = await frontend();
   const composer = { value: 'Initial draft', selectionStart: 0, selectionEnd: 0 };

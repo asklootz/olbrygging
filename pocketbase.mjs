@@ -1,4 +1,5 @@
 import { ApiError, checkFields, readBody, text } from './api.mjs';
+import application from './pb_hooks/application.cjs';
 
 const AUTH_COOKIE = 'olbrygging_pb_auth';
 const MAX_COOKIE_AGE = 60 * 60 * 12;
@@ -133,6 +134,11 @@ export function createPocketbaseApi(options) {
   }
 
   return async (req, res, pathname) => {
+    if (pathname === '/api/ambassador-applications') {
+      const input = application.validateApplication(await readBody(req), (message) => new ApiError(400, message));
+      await request('/api/portal/ambassador-applications', { method: 'POST', body: input });
+      return { status: 201, body: { submitted: true } };
+    }
     if (pathname === '/api/login') {
       const body = await readBody(req);
       checkFields(body, ['email', 'password']);

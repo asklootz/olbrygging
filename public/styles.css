@@ -65,6 +65,23 @@ body{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-ri
 .settings-card .field{max-width:300px;margin:0}
 .check-label{display:flex;align-items:center;gap:9px;font-size:12px}
 .check-label input{width:auto}
+.apply-invitation{display:grid;grid-template-columns:38px 1fr;gap:12px;margin-top:28px;padding-top:24px;border-top:1px solid var(--line)}
+.apply-symbol{width:38px;height:38px;display:grid;place-items:center;background:#e8eee1;color:#58764e;border-radius:10px}
+.apply-invitation h3{margin:0 0 5px;font-size:13px}.apply-invitation p{font-size:11px;color:var(--muted);margin:0}
+.apply-invitation>.secondary{grid-column:1/-1;width:100%;white-space:normal}
+.application-form fieldset{margin:0 0 24px;padding:0;border:0;min-width:0}
+.application-form legend{display:flex;align-items:center;gap:10px;margin-bottom:18px;font-size:14px;font-weight:650}
+.application-form legend span{color:#638054;background:#eaf0e3;padding:6px;border-radius:6px;font-size:10px;letter-spacing:1px}
+.application-form .form-row>.field{min-width:0}.application-form .field:last-child{margin-bottom:0}
+.application-form fieldset>.form-row:last-child .field{margin-bottom:0}
+.application-social-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}.application-social-grid .field{min-width:0}
+@media(max-width:720px){.application-social-grid{grid-template-columns:1fr}}
+.application-consent{background:#edf1e8;border:1px solid #dfe6d7;border-radius:9px;padding:16px}
+.application-consent .check-label{align-items:flex-start;line-height:1.6;margin:0}.application-consent input{margin-top:4px;flex-shrink:0;accent-color:var(--green)}
+.terms-link{display:block;font-size:11px;line-height:1.6;color:#496c53;margin:10px 0 0 24px;text-underline-offset:3px}
+.application-form>.error{color:#a64233}.application-notice{padding:12px;background:#fff1de;border-radius:7px}
+.application-success{text-align:center}.application-success-icon{display:inline-grid;place-items:center;width:60px;height:60px;border-radius:50%;background:#e8eee1;color:#496c53;margin-bottom:18px}.application-success-icon .icon{width:30px;height:30px}
+.application-success .primary{margin-top:10px}.application-terms{max-width:760px;margin:50px auto;padding:24px}.application-terms .eyebrow{color:#638054;margin-bottom:20px}.application-terms h2{margin-top:28px}.application-terms p{font-size:14px}
 .compact .main{font-size:12px}
 .compact .card{padding-top:14px;padding-bottom:14px}
 [data-theme=dark] body{background:#18231e;color:#e2e9e2}

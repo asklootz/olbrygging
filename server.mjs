@@ -238,6 +238,7 @@ export function createApp(options = {}) {
   }
   const sessions = new Map();
   const attempts = new Map();
+  const applicationAttempts = new Map();
   let mutationQueue = Promise.resolve();
 
   const persist = (next) => {
@@ -311,7 +312,7 @@ export function createApp(options = {}) {
   async function api(req, res, pathname) {
     const method = req.method;
     const known = ['/api/config', '/api/session', '/api/login', '/api/logout', '/api/workspace', '/api/tickets', '/api/articles', '/api/damage-reports', '/api/profile', '/api/users'].includes(pathname)
-      || pathname === '/api/products/preview'
+      || pathname === '/api/products/preview' || pathname === '/api/ambassador-applications'
       || /^\/api\/tickets\/[a-zA-Z0-9_-]{1,100}(?:\/messages)?$/.test(pathname)
       || /^\/api\/(articles|damage-reports|users)\/[a-zA-Z0-9_-]{1,100}$/.test(pathname);
     if (!known) throw new ApiError(404, 'Ukjent API-endepunkt.');
@@ -331,6 +332,20 @@ export function createApp(options = {}) {
       }
     }
     if (pathname === '/api/config') return json(res, 200, { demoMode: !pocketbase });
+    if (pathname === '/api/ambassador-applications') {
+      if (!pocketbase) throw new ApiError(503, 'Søknader krever PocketBase. Bruk den ordinære portalen, ikke den lokale demoen.');
+      const now = Date.now();
+      for (const [key, value] of applicationAttempts) if (value.until <= now) applicationAttempts.delete(key);
+      // Do not trust caller-supplied forwarding headers as a rate-limit key.
+      const key = req.socket.remoteAddress;
+      const attempt = applicationAttempts.get(key) || { count: 0, until: now + 900000 };
+      if (attempt.count >= 10 || (!applicationAttempts.has(key) && applicationAttempts.size >= 5000)) {
+        res.setHeader('Retry-After', '900');
+        throw new ApiError(429, 'For mange søknadsforsøk. Prøv igjen om 15 minutter.');
+      }
+      attempt.count++;
+      applicationAttempts.set(key, attempt);
+    }
     if (pocketbase) {
       const { status, body } = await pocketbase(req, res, pathname);
       return json(res, status, body);

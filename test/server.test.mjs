@@ -58,6 +58,15 @@ test('PWA assets are publicly served with correct types and revalidation headers
   }
 });
 
+test('JSON demo explicitly refuses real ambassador applications', async (t) => {
+  const { call, dataFile } = await fixture(t);
+  const before = readFileSync(dataFile, 'utf8');
+  const response = await call('/api/ambassador-applications', { method: 'POST', body: {} });
+  assert.equal(response.status, 503);
+  assert.match(response.body.error, /PocketBase/);
+  assert.equal(readFileSync(dataFile, 'utf8'), before);
+});
+
 test('authentication, safe workspace data, strict cookies and logout', async (t) => {
   const { call, login, dataFile } = await fixture(t);
   assert.deepEqual((await call('/api/config')).body, { demoMode: true });

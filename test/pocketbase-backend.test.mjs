@@ -589,7 +589,7 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
     }
     const before = await expect(200, '/api/collections/users/records', { token: admin });
     await stop();
-    cli(['migrate', 'down', '1'], 'y\n');
+    cli(['migrate', 'down', '4'], 'y\n');
     cli(['migrate', 'up']);
     await start();
     const after = await expect(200, '/api/collections/users/records', { token: admin });
@@ -600,5 +600,96 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
     assert.deepEqual(workspace.damageReports, []);
     assert.equal(workspace.user.socialMedia, '');
     assert.match(cli(['migrate', 'up']), /No new migrations/);
+  });
+
+  await t.test('public ambassador applications are private, pending, validated, and linkable only to ambassadors', async () => {
+    const body = {
+      name: ' New Applicant ', phone: '+47 123 45 678', email: 'APPLICANT@example.invalid',
+      addressLine1: 'Testveien 12', addressLine2: 'Leilighet 2', postalCode: '0123', city: 'Oslo',
+      region: 'Oslo', country: 'Norge',
+      socialLinks: { instagram: 'https://www.instagram.com/test', facebook: '', tiktok: '', twitter: '', bluesky: '', youtube: 'https://www.youtube.com/@test' }, termsAccepted: true,
+    };
+    const path = '/api/portal/ambassador-applications';
+    const recordsPath = '/api/collections/ambassador_applications/records';
+    const before = await expect(200, '/api/collections/users/records', { token: admin });
+    for (const changes of [{ termsAccepted: false }, { termsAccepted: 'true' }, { termsAccepted: undefined },
+      { socialLinks: {} }, { socialLinks: { instagram: 'javascript:alert(1)' } }, { socialLinks: { instagram: 'http://instagram.com/test' } },
+      { socialLinks: { instagram: 'https://facebook.com/test' } }, { socialLinks: { unknown: 'https://instagram.com/test' } },
+      { userId: users.ambassador.id }, { status: 'approved' }, { name: '' }, { phone: 'bad' },
+      { email: 'invalid' }, { termsVersion: 'forged' }, { addressLine1: '' }, { postalCode: '' }, { city: '' }, { country: '' },
+    ]) await expect(400, path, { method: 'POST', body: { ...body, ...changes } });
+    await expect(415, path, { method: 'POST', raw: JSON.stringify(body), contentType: 'text/plain' });
+    await expect(413, path, { method: 'POST', body: { ...body, name: 'x'.repeat(25000) } });
+    assert.deepEqual(await expect(201, path, { method: 'POST', body }), { submitted: true });
+    const result = await expect(200, recordsPath, { token: admin });
+    assert.equal(result.totalItems, 1);
+    const record = result.items[0];
+    assert.equal(record.name, 'New Applicant');
+    assert.equal(record.email, 'applicant@example.invalid');
+    assert.equal(record.phone, body.phone);
+    assert.equal(record.addressLine1, body.addressLine1);
+    assert.equal(record.addressLine2, body.addressLine2);
+    assert.equal(record.postalCode, '0123');
+    assert.equal(record.city, body.city);
+    assert.equal(record.country, body.country);
+    assert.equal(record.region, body.region);
+    assert.deepEqual(record.socialLinks, body.socialLinks);
+    assert.equal(record.status, 'pending');
+    assert.equal(record.userId, '');
+    assert.equal(record.termsAccepted, true);
+    assert.equal(record.termsVersion, '2026-10-30');
+    assert.ok(Math.abs(Date.parse(record.termsAcceptedAt) - Date.now()) < 10000);
+    assert.equal((await expect(200, '/api/collections/users/records', { token: admin })).totalItems, before.totalItems);
+    // A repeat is acknowledged but cannot overwrite personal data or reveal it.
+    assert.deepEqual(await expect(201, path, { method: 'POST', body: { ...body, name: 'Changed' } }), { submitted: true });
+    const repeated = await expect(200, recordsPath, { token: admin });
+    assert.equal(repeated.totalItems, 1);
+    assert.equal(repeated.items[0].name, 'New Applicant');
+    for (const token of [undefined, tokens.ambassador, tokens.employee]) {
+      await expect(403, recordsPath, { token });
+      await expect(403, `${recordsPath}/${record.id}`, { token });
+      await expect(403, recordsPath, { token, method: 'POST', body });
+      await expect(403, `${recordsPath}/${record.id}`, { token, method: 'PATCH', body: { status: 'approved' } });
+      await expect(403, `${recordsPath}/${record.id}`, { token, method: 'DELETE' });
+    }
+    const schema = await expect(200, '/api/collections/ambassador_applications', { token: admin });
+    for (const rule of ['listRule', 'viewRule', 'createRule', 'updateRule', 'deleteRule']) assert.equal(schema[rule], null);
+    // In a previous test both original employees were demoted; set one back.
+    await expect(200, `/api/collections/users/records/${users.employee.id}`, { token: admin, method: 'PATCH', body: { role: 'employee' } });
+    await expect(400, `${recordsPath}/${record.id}`, { token: admin, method: 'PATCH', body: { userId: users.employee.id } });
+    const linked = await expect(200, `${recordsPath}/${record.id}`, {
+      token: admin, method: 'PATCH', body: { userId: users.ambassador.id, status: 'approved' },
+    });
+    assert.equal(linked.userId, users.ambassador.id);
+    assert.equal(linked.status, 'approved');
+    const workspace = await expect(200, '/api/portal/workspace', { token: tokens.ambassador });
+    assert.equal(workspace.ambassadorApplications, undefined);
+    assert.ok(!JSON.stringify(workspace).includes('Testveien 12'));
+
+    // Exercise the real anonymous Node route as used by the sign-in form.
+    const { createApp } = await import('../server.mjs');
+    const app = createApp({ pocketbaseUrl: base });
+    app.listen(0, '127.0.0.1');
+    await once(app, 'listening');
+    const origin = `http://127.0.0.1:${app.address().port}`;
+    try {
+      const response = await fetch(`${origin}/api/ambassador-applications`, {
+        method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...body, email: 'second-applicant@example.invalid',
+          socialLinks: { instagram: `https://instagram.com/0/${'ø'.repeat(700)}`, facebook: `https://facebook.com/1/${'ø'.repeat(700)}`,
+            tiktok: `https://tiktok.com/2/${'ø'.repeat(700)}`, twitter: `https://x.com/3/${'ø'.repeat(700)}`,
+            bluesky: `https://bsky.app/4/${'ø'.repeat(700)}`, youtube: `https://youtube.com/5/${'ø'.repeat(700)}`,
+          },
+        }),
+      });
+      assert.equal(response.status, 201);
+      assert.deepEqual(await response.json(), { submitted: true });
+      assert.deepEqual(response.headers.getSetCookie(), []);
+    } finally { await new Promise((done) => app.close(done)); }
+    const saved = await expect(200, recordsPath, { token: admin });
+    assert.equal(saved.totalItems, 2);
+    await stop();
+    await start();
+    assert.equal((await expect(200, recordsPath, { token: admin })).totalItems, 2);
   });
 });

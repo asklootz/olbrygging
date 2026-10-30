@@ -23,6 +23,11 @@ const workspacePath = '/api/portal/workspace';
 const ticketsPath = '/api/portal/tickets';
 const messagePath = `${ticketsPath}/${ticket.id}/messages`;
 const resultPath = `/api/portal/messages/${messageId}/email-result`;
+const applicationBody = {
+  name: ' Applicant ', email: 'APPLICANT@example.invalid', phone: '+47 12345678',
+  addressLine1: 'Testveien 1', addressLine2: '', postalCode: '0123', city: 'Oslo', region: '', country: 'Norge',
+  socialLinks: { instagram: 'https://www.instagram.com/test', facebook: '', tiktok: '', twitter: '', bluesky: '', youtube: 'https://www.youtube.com/@test' }, termsAccepted: true,
+};
 
 function provider() {
   const calls = [];
@@ -89,6 +94,48 @@ test('PocketBase is the default even when no backend URL is configured', async (
     if (previous === undefined) delete process.env.POCKETBASE_URL;
     else process.env.POCKETBASE_URL = previous;
   }
+});
+
+test('public applications submit only to the scoped hook without auth, cookies or privileged credentials', async (t) => {
+  const { call, calls, setHandler } = await fixture(t, {
+    pocketbaseAdminEmail: 'admin@example.invalid', pocketbaseAdminPassword: 'test-password',
+  });
+  setHandler(({ path }) => path === '/api/portal/ambassador-applications' ? reply({ submitted: true }, 201) : undefined);
+  const result = await call('/ambassador-applications', { method: 'POST', body: applicationBody, cookie: authCookie });
+  assert.equal(result.status, 201);
+  assert.deepEqual(result.body, { submitted: true });
+  assert.deepEqual(result.cookies, []);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].path, '/api/portal/ambassador-applications');
+  assert.equal(calls[0].headers.Authorization, undefined);
+  assert.equal(calls[0].body.name, 'Applicant');
+  assert.equal(calls[0].body.email, 'applicant@example.invalid');
+  assert.deepEqual(calls[0].body.socialLinks, applicationBody.socialLinks);
+});
+
+test('application endpoint enforces methods, same origin and validation before reaching PocketBase', async (t) => {
+  const { call, calls } = await fixture(t);
+  assert.equal((await call('/ambassador-applications')).status, 405);
+  assert.equal((await call('/ambassador-applications', { method: 'PATCH', body: applicationBody })).status, 405);
+  assert.equal((await call('/ambassador-applications', { method: 'POST', body: applicationBody, headers: { origin: 'https://other.invalid' } })).status, 403);
+  for (const changes of [{ termsAccepted: false }, { socialLinks: {} }, { status: 'approved' }, { userId: user.id }, { postalCode: '' }]) {
+    assert.equal((await call('/ambassador-applications', { method: 'POST', body: { ...applicationBody, ...changes } })).status, 400);
+  }
+  assert.equal((await call('/ambassador-applications', { method: 'POST', raw: '{' })).status, 400);
+  assert.equal((await call('/ambassador-applications', { method: 'POST', raw: 'x'.repeat(25000) })).status, 413);
+  assert.equal(calls.length, 0);
+});
+
+test('application attempts are rate limited even when emails rotate, and failures never return success', async (t) => {
+  const { call, calls, setHandler } = await fixture(t);
+  setHandler(() => reply({ message: 'private backend details' }, 503));
+  for (let i = 0; i < 10; i++) {
+    const result = await call('/ambassador-applications', { method: 'POST', body: { ...applicationBody, email: `applicant${i}@example.invalid` } });
+    assert.equal(result.status, 503);
+    assert.ok(!JSON.stringify(result.body).includes('private backend'));
+  }
+  assert.equal((await call('/ambassador-applications', { method: 'POST', body: applicationBody })).status, 429);
+  assert.equal(calls.length, 10);
 });
 
 test('PocketBase config, safe login projection and separate secure bounded auth cookie', async (t) => {
