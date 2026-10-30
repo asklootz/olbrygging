@@ -35,6 +35,31 @@ npm run pocketbase -- superuser create <admin-email> <admin-password>
 
 Use your own credentials and do not commit them; command arguments may be recorded in shell history. In the dashboard's **users** collection, create at least one `employee` and one `ambassador`, each with a name, email and password. Sign into the portal using those accounts, **not** the superuser. Only superusers can provision users, change roles, or administer products. The migration seeds eight fictional products; replace them before real use.
 
+### Import existing local users
+
+The trusted local database owner can import accounts from the JSON workspace without creating a superuser or exposing a public import endpoint. **Stop PocketBase first and back up its data directory.** The importer defaults to a dry run and never changes the source workspace. For the existing fictional demo accounts:
+
+```sh
+npm run pocketbase:import-users -- --demo-passwords
+npm run pocketbase:import-users -- --demo-passwords --apply
+npm run dev
+```
+
+This imports active `employee` and `ambassador` profiles into PocketBase's **users** auth collection. Local `admin` and inactive accounts are skipped. PocketBase generates new IDs; existing accounts matched by email are left completely unchanged, including their passwords and roles. New accounts are saved in one transaction, so an invalid record rolls back the entire batch. Tickets, messages and other workspace records are **not** imported.
+
+`--demo-passwords` reuses the public password in the demo table below **only** for addresses ending in `@olbrygging.example` whose stored scrypt hash matches it. It never treats a hash as a password or guesses credentials for real accounts. Sign into the portal with the imported email and password; login and subsequent session validation are handled by PocketBase.
+
+For real accounts, supply `--passwords-file` pointing to a private JSON object mapping normalized, lowercase email addresses to **new** passwords (12–72 UTF-8 bytes). The old scrypt hashes cannot be converted to PocketBase passwords. Keep this file outside Git, deliver new passwords securely, and remove it after import. Password values are not accepted as command-line arguments or printed. For example:
+
+```sh
+npm run pocketbase:import-users -- --source /private/workspace.json --passwords-file /private/passwords.json
+npm run pocketbase:import-users -- --source /private/workspace.json --passwords-file /private/passwords.json --apply
+```
+
+`--source` defaults to `DATA_FILE` or the repository's local workspace; `--dir` overrides the local PocketBase data directory. This is an offline local-database operation, not a remote import through `POCKETBASE_URL`. Do not point it at a data directory used by a running PocketBase process. Back up and verify account counts and logins before retiring the old workspace.
+
+Both import and normal backend startup apply pending migrations. An additive upgrade repairs older installations missing profile fields, product snapshots, articles or damage reports, while preserving existing accounts and tickets.
+
 For separate terminals or an existing PocketBase server:
 
 ```sh
@@ -45,11 +70,11 @@ npm run pocketbase:start
 npm start
 ```
 
-`npm start` and `npm run dev` load `.env` if present. Set `POCKETBASE_URL=http://127.0.0.1:8090` in `.env` for `npm start`; `npm run dev` sets this automatically and rejects external URLs. An external PocketBase deployment must install this repository's `pb_migrations` and `pb_hooks`, not just run an empty server.
+`npm start` and `npm run dev` load `.env` if present. `npm start` uses `http://127.0.0.1:8090` by default; set `POCKETBASE_URL` for another backend. `npm run dev` sets the local URL automatically and rejects external URLs. An external PocketBase deployment must install this repository's `pb_migrations` and `pb_hooks`, not just run an empty server.
 
 ### Optional JSON demo
 
-Without `POCKETBASE_URL`, `npm start` retains the standalone local demo. Remove or empty that variable in `.env` to use it. Open **http://127.0.0.1:3000** and use the demo-role buttons or log in with:
+Use `npm run demo` to explicitly start the standalone JSON demo. An explicitly empty `POCKETBASE_URL` also selects this mode; an absent variable now defaults to PocketBase rather than silently selecting JSON authentication. Open **http://127.0.0.1:3000** and use the demo-role buttons or log in with:
 
 | Role | Email | Password |
 | --- | --- | --- |
@@ -93,7 +118,7 @@ When PocketBase is configured, no local JSON workspace or demo accounts are crea
 | `HOST` | `127.0.0.1` — local access only |
 | `PORT` | `3000` |
 | `DATA_FILE` | `data/workspace.json` |
-| `POCKETBASE_URL` | Backend origin; enables PocketBase mode. HTTPS required except for loopback HTTP |
+| `POCKETBASE_URL` | Defaults to `http://127.0.0.1:8090`; HTTPS required except for loopback HTTP. Explicitly empty selects the JSON demo |
 | `POCKETBASE_ADMIN_EMAIL` | Optional **server-only** superuser email for recording email delivery outcomes |
 | `POCKETBASE_ADMIN_PASSWORD` | Matching superuser password; both admin settings must be supplied together |
 | `RESEND_API_KEY` | Optional outbound email provider key |
@@ -111,7 +136,7 @@ Self-service signup, invite-link/password-recovery screens, uploads, realtime su
 
 ### Migrating from Supabase
 
-Supabase support, environment variables, SQL migrations, and provider-specific tests have been removed. This change does **not** connect to, modify, or automatically import an existing Supabase project or JSON workspace. Start a fresh PocketBase database, provision accounts, and explicitly map old user/ticket/message IDs if importing data. Password hashes and sessions are not portable; set new passwords. Preserve old data/backups until a deliberate import has been verified.
+Supabase support, environment variables, SQL migrations, and provider-specific tests have been removed. Startup does **not** connect to, modify, or automatically import an existing Supabase project or JSON workspace. Use the explicit local-user importer above for JSON accounts, or provision accounts through trusted administration. Supabase exports and ticket/message migration are not supported by this importer. Explicitly map old user/ticket/message IDs when implementing a full data migration. Password hashes and sessions are not portable; real accounts need new passwords. Preserve old data/backups until a deliberate import has been verified.
 
 ## Email
 
@@ -133,7 +158,7 @@ npm run test:integration
 
 Tests use Node's built-in test runner and temporary storage. They cover authentication, permissions, persistence, ticket creation, status/assignment updates, conversations, email delivery failure, invalid requests, account-switch refresh races, and draft preservation during metadata saves. PocketBase adapter tests use a mocked backend and check cookie refresh, restart-safe sessions, trusted roles, sanitized failures, endpoint routing, and privileged credential separation.
 
-The real backend suite starts an isolated PocketBase instance with temporary data and exercises migrations, authorization, workflow validation, and concurrency. It skips if the native executable has not been installed; `npm run test:integration` downloads the pinned binary first and explicitly runs that suite. It never uses the live `pb_data/` directory. `npm audit` checks npm dependencies; the native PocketBase executable has its own release/security lifecycle.
+The real backend suite starts an isolated PocketBase instance with temporary data and exercises migrations, authorization, workflow validation, concurrency, and transactional/idempotent user import followed by portal login. It skips if the native executable has not been installed; `npm run test:integration` downloads the pinned binary first and explicitly runs that suite. It never uses the live `pb_data/` directory. `npm audit` checks npm dependencies; the native PocketBase executable has its own release/security lifecycle.
 
 ## Deployment boundary
 

@@ -10,7 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { once } from 'node:events';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const binary = resolve(process.env.POCKETBASE_BINARY || resolve(root, 'pocketbase'));
+const binary = resolve(process.env.POCKETBASE_BINARY || resolve(root, process.platform === 'win32' ? 'pocketbase.exe' : 'pocketbase'));
 const skip = !existsSync(binary) && 'Native PocketBase binary missing; install PocketBase 0.40.6 or set POCKETBASE_BINARY to run integration tests.';
 const isoTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
@@ -18,7 +18,7 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
   const directory = mkdtempSync(resolve(root, '.pb-integration-'));
   const flags = [
     `--dir=${directory}`, `--hooksDir=${resolve(root, 'pb_hooks')}`,
-    `--migrationsDir=${resolve(root, 'pb_migrations')}`,
+    `--migrationsDir=${resolve(root, 'pb_migrations')}`, '--automigrate=false',
   ];
   let processHandle;
   let logs = '';
@@ -34,8 +34,8 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
     await stop();
     rmSync(directory, { recursive: true, force: true });
   });
-  function cli(args, input) {
-    const result = spawnSync(binary, [...args, ...flags], { cwd: root, encoding: 'utf8', input, timeout: 30_000 });
+  function cli(args, input, env = {}) {
+    const result = spawnSync(binary, [...args, ...flags], { cwd: root, encoding: 'utf8', input, timeout: 30_000, env: { ...process.env, ...env } });
     assert.equal(result.status, 0, `${args.join(' ')} failed:\n${result.stdout}\n${result.stderr}\n${result.error || ''}`);
     return result.stdout;
   }
@@ -77,7 +77,7 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
       headers: { ...(token ? { Authorization: token } : {}), ...(body !== undefined || raw !== undefined ? { 'Content-Type': contentType } : {}) },
       body: raw ?? (body !== undefined ? JSON.stringify(body) : undefined),
     });
-    const data = await response.json();
+    const data = response.status === 204 ? null : await response.json();
     return { status: response.status, data };
   }
   async function expect(status, path, options) {
@@ -527,5 +527,78 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
     assert.equal(demoted.tickets.length, 0);
     await expect(404, `/api/portal/tickets/${ticket.id}`, { token: tokens.employee, method: 'PATCH', body: { status: 'completed' } });
     await expect(409, '/api/portal/tickets', { token: tokens.ambassador, method: 'POST', body: draft });
+  });
+
+  await t.test('offline user import is atomic, repeatable and signs into the Node portal using PocketBase', async () => {
+    await stop();
+    const imported = {
+      email: 'imported@example.invalid', name: 'Imported ambassador', role: 'ambassador', socialMedia: '@imported', password,
+    };
+    const command = ['portal-import-users'];
+    assert.match(cli(command, undefined, { OLBRYGGING_IMPORT_USERS: JSON.stringify([imported]) }), /1 created, 0 existing/);
+    // Reruns must not reset passwords, names or roles of existing accounts.
+    assert.match(cli(command, undefined, {
+      OLBRYGGING_IMPORT_USERS: JSON.stringify([{ ...imported, role: 'employee', password: 'Replacement password' }]),
+    }), /0 created, 1 existing/);
+    const failed = spawnSync(binary, [...command, ...flags], {
+      cwd: root, encoding: 'utf8', timeout: 30_000,
+      env: { ...process.env, OLBRYGGING_IMPORT_USERS: JSON.stringify([
+        { ...imported, email: 'rollback@example.invalid' }, { ...imported, email: 'invalid@example.invalid', name: '' },
+      ]) },
+    });
+    assert.notEqual(failed.status, 0);
+    await start();
+    const rollback = await expect(200, '/api/collections/users/records?filter=email%3D%22rollback%40example.invalid%22', { token: admin });
+    assert.equal(rollback.totalItems, 0);
+    const { createApp } = await import('../server.mjs');
+    const app = createApp({ pocketbaseUrl: base });
+    app.listen(0, '127.0.0.1');
+    await once(app, 'listening');
+    const origin = `http://127.0.0.1:${app.address().port}`;
+    try {
+      const login = await fetch(`${origin}/api/login`, {
+        method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: imported.email, password }),
+      });
+      assert.equal(login.status, 200);
+      const profile = (await login.json()).user;
+      assert.equal(profile.role, 'ambassador');
+      assert.equal(profile.name, imported.name);
+      assert.match(profile.id, /^[a-z0-9]{15}$/);
+      const cookie = login.headers.getSetCookie()[0].split(';')[0];
+      assert.match(cookie, /^olbrygging_pb_auth=/);
+      const workspace = await fetch(`${origin}/api/workspace`, { headers: { cookie } });
+      assert.equal(workspace.status, 200);
+      assert.equal((await workspace.json()).user.socialMedia, imported.socialMedia);
+    } finally {
+      await new Promise((done) => app.close(done));
+    }
+  });
+
+  await t.test('forward migration repairs an older installed schema without resetting accounts or tickets', async () => {
+    const schema = await expect(200, '/api/collections', { token: admin });
+    for (const name of ['damage_reports', 'articles']) {
+      const collection = schema.items.find((item) => item.name === name);
+      await expect(204, `/api/collections/${collection.id}`, { token: admin, method: 'DELETE' });
+    }
+    for (const [name, missing] of [['users', ['socialMedia']], ['tickets', ['productUrl', 'productSnapshot']]]) {
+      const collection = schema.items.find((item) => item.name === name);
+      await expect(200, `/api/collections/${collection.id}`, {
+        token: admin, method: 'PATCH', body: { fields: collection.fields.filter((field) => !missing.includes(field.name)) },
+      });
+    }
+    const before = await expect(200, '/api/collections/users/records', { token: admin });
+    await stop();
+    cli(['migrate', 'down', '1'], 'y\n');
+    cli(['migrate', 'up']);
+    await start();
+    const after = await expect(200, '/api/collections/users/records', { token: admin });
+    assert.deepEqual(after.items.map((item) => item.id).sort(), before.items.map((item) => item.id).sort());
+    const workspace = await expect(200, '/api/portal/workspace', { token: tokens.ambassador });
+    assert.ok(workspace.tickets.some((item) => item.id === ticket.id));
+    assert.deepEqual(workspace.articles, []);
+    assert.deepEqual(workspace.damageReports, []);
+    assert.equal(workspace.user.socialMedia, '');
+    assert.match(cli(['migrate', 'up']), /No new migrations/);
   });
 });

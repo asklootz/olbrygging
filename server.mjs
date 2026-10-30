@@ -225,7 +225,7 @@ export function createApp(options = {}) {
   const fetchProductDetails = (value) => readProductPage(value, fetchProductPage);
   const secureCookies = options.secureCookies ?? process.env.COOKIE_SECURE === 'true';
   const pocketbase = createPocketbaseApi({
-    url: options.pocketbaseUrl ?? process.env.POCKETBASE_URL,
+    url: options.pocketbaseUrl ?? process.env.POCKETBASE_URL ?? 'http://127.0.0.1:8090',
     adminEmail: options.pocketbaseAdminEmail ?? process.env.POCKETBASE_ADMIN_EMAIL,
     adminPassword: options.pocketbaseAdminPassword ?? process.env.POCKETBASE_ADMIN_PASSWORD,
     fetch: options.fetchPocketbase ?? globalThis.fetch,
@@ -632,5 +632,6 @@ export function createApp(options = {}) {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT ?? 3000);
   const host = process.env.HOST ?? '127.0.0.1';
-  createApp().listen(port, host, () => console.log(`Ølbrygging: http://${host}:${port}`));
+  createApp(process.argv.includes('--demo') ? { pocketbaseUrl: '' } : {})
+    .listen(port, host, () => console.log(`Ølbrygging: http://${host}:${port}`));
 }

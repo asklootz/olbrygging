@@ -7,13 +7,15 @@
   "main": "server.mjs",
   "scripts": {
     "start": "node --env-file-if-exists=.env server.mjs",
+    "demo": "node --env-file-if-exists=.env server.mjs --demo",
     "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
+    "pocketbase:import-users": "node --env-file-if-exists=.env scripts/import-users.mjs",
     "pocketbase": "pocketbase --pb-version 0.40.6",
     "pocketbase:install": "pocketbase --pb-version 0.40.6 --version",
     "pocketbase:start": "pocketbase --pb-version 0.40.6 serve --http=127.0.0.1:8090 --hooksDir=pb_hooks --migrationsDir=pb_migrations",
     "test:integration": "npm run pocketbase:install && node --test test/pocketbase-backend.test.mjs",
     "test": "node --test",
-    "check": "node --check server.mjs && node --check api.mjs && node --check pocketbase.mjs && node --check public/app.js && node --check public/pwa.js && node --check public/sw.js && node --check scripts/dev.mjs"
+    "check": "node --check server.mjs && node --check api.mjs && node --check pocketbase.mjs && node --check public/app.js && node --check public/pwa.js && node --check public/sw.js && node --check scripts/dev.mjs && node --check scripts/import-users.mjs && node --check pb_hooks/import-users.pb.js"
   },
   "engines": {
     "node": ">=22.9"

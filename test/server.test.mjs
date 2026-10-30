@@ -16,6 +16,7 @@ async function fixture(t, options = {}) {
   mkdirSync(publicDir);
   writeFileSync(resolve(publicDir, 'index.html'), '<!doctype html><title>Demo</title>');
   const app = createApp({
+    pocketbaseUrl: '',
     dataFile, publicDir,
     fetchProductPage: async () => new Response('<html><head><meta property="og:title" content="Test product"></head></html>', {
       headers: { 'content-type': 'text/html' },
@@ -110,7 +111,7 @@ test('ticket creation, employee approval and ambassador workflow persist across 
   assert.equal((await call(path, { method: 'PATCH', cookie, body: { status: 'review' } })).status, 200);
   assert.equal((await call(path, { method: 'PATCH', cookie, body: { status: 'completed' } })).status, 403);
   assert.equal((await call(path, { method: 'PATCH', cookie: staff, body: { status: 'completed' } })).status, 200);
-  const second = createApp({ dataFile, publicDir });
+  const second = createApp({ dataFile, publicDir, pocketbaseUrl: '' });
   second.listen(0, '127.0.0.1');
   await once(second, 'listening');
   t.after(() => new Promise((done) => second.close(done)));

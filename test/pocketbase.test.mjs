@@ -76,6 +76,21 @@ async function fixture(t, options = {}) {
   return { ...mock, call, login, dataFile };
 }
 
+test('PocketBase is the default even when no backend URL is configured', async (t) => {
+  const previous = process.env.POCKETBASE_URL;
+  delete process.env.POCKETBASE_URL;
+  try {
+    const { call, login, calls, dataFile } = await fixture(t, { pocketbaseUrl: undefined });
+    assert.deepEqual((await call('/config')).body, { demoMode: false });
+    assert.equal((await login()).status, 200);
+    assert.equal(calls[0].path, userAuth);
+    assert.equal(existsSync(dataFile), false);
+  } finally {
+    if (previous === undefined) delete process.env.POCKETBASE_URL;
+    else process.env.POCKETBASE_URL = previous;
+  }
+});
+
 test('PocketBase config, safe login projection and separate secure bounded auth cookie', async (t) => {
   const { call, login, calls, dataFile } = await fixture(t, { secureCookies: true });
   assert.deepEqual((await call('/config')).body, { demoMode: false });
