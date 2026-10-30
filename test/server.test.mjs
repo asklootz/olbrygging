@@ -49,7 +49,7 @@ async function fixture(t, options = {}) {
 
 test('PWA assets are publicly served with correct types and revalidation headers', async (t) => {
   const { base } = await fixture(t, { publicDir: resolve('public') });
-  for (const [path, type] of [['/manifest.webmanifest', 'application/manifest+json'], ['/sw.js', 'text/javascript'], ['/pwa.js', 'text/javascript'], ['/icons/icon-192.png', 'image/png'], ['/icons/icon-512.png', 'image/png'], ['/icons/apple-touch-icon.png', 'image/png']]) {
+  for (const [path, type] of [['/manifest.webmanifest', 'application/manifest+json'], ['/sw.js', 'text/javascript'], ['/pwa.js', 'text/javascript'], ['/mobile.css', 'text/css'], ['/icons/icon-192.png', 'image/png'], ['/icons/icon-512.png', 'image/png'], ['/icons/apple-touch-icon.png', 'image/png']]) {
     const response = await fetch(`${base}${path}`);
     assert.equal(response.status, 200);
     assert.ok(response.headers.get('content-type').startsWith(type));

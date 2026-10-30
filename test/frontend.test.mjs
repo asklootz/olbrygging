@@ -16,6 +16,7 @@ async function frontend() {
       hidden: false,
       activeElement: null,
       querySelector: (selector) => selector === '#app' ? app : selector === '#modal-root' ? modal : null,
+      querySelectorAll: () => [],
       addEventListener: (event, handler) => { listeners[event] = handler; },
     },
     fetch: async () => ({ ok: true, json: async () => ({ user: null }) }),
@@ -27,6 +28,7 @@ async function frontend() {
   });
   runInContext(source, context);
   await new Promise(setImmediate);
+  runInContext('renderApp = render;', context);
   runInContext('render = () => {}; toast = () => {};', context);
   return { context, listeners, elements, poll, run: (script) => runInContext(script, context) };
 }
@@ -45,6 +47,45 @@ test('a delayed workspace poll cannot restore a previous account after logout or
     assert.equal(run('state.user?.id ?? null'), nextUser?.id ?? null);
     assert.equal(run('state.tickets.length'), 0);
   }
+});
+
+test('workspace polling defers a render while a form has unsaved edits', async () => {
+  const { context, run, poll } = await frontend();
+  const form = {};
+  context.form = form;
+  context.document.querySelectorAll = () => [form];
+  run(`state.user = { id: 'emil', role: 'ambassador' };
+    state.tickets = [{ id: 'current-ticket' }]; dirtyForms.add(form);`);
+  context.fetch = async () => ({ ok: true, json: async () => ({
+    user: { id: 'emil', role: 'ambassador' },
+    tickets: [{ id: 'refreshed-ticket' }], articles: [], damageReports: [], users: [], products: [],
+  }) });
+  await poll();
+  assert.equal(run('state.tickets[0].id'), 'current-ticket');
+});
+
+test('mobile navigation keeps four primary destinations and exposes secondary pages in More', async () => {
+  const { run } = await frontend();
+  run(`state.user = { id: 'admin', name: 'Test Admin', role: 'admin' };
+    state.products = []; state.tickets = []; state.users = []; state.articles = []; state.damageReports = [];
+    showModal = html => { capturedModal = html; };`);
+  const html = run('renderApp(); app.innerHTML');
+  for (const page of ['overview', 'tickets', 'products', 'messages']) assert.match(html, new RegExp(`<button data-page="${page}" (?!data-mobile-secondary)`));
+  for (const page of ['profiles', 'knowledge', 'damage', 'settings', 'admin']) assert.match(html, new RegExp(`data-page="${page}" data-mobile-secondary`));
+  assert.match(html, /data-action="more-menu"/);
+  run('showModal = html => { capturedModal = html; }; moreMenu();');
+  for (const label of ['Ambassadører', 'Kunnskapsbase', 'Skademeldinger', 'Innstillinger', 'Brukeradministrasjon', 'Hjelp og informasjon']) {
+    assert.ok(run(`capturedModal.includes('${label}')`));
+  }
+});
+
+test('phone layout stylesheet is linked and precached without expanding the private cache boundary', () => {
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const worker = readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8');
+  assert.match(html, /href="\/mobile\.css"/);
+  assert.match(worker, /'\/mobile\.css'/);
+  assert.match(worker, /olbrygging-shell-v5/);
+  assert.doesNotMatch(worker, /\/api\//);
 });
 
 test('demo login shortcuts appear only when the server enables demo mode', async () => {
@@ -67,7 +108,7 @@ test('sign-in offers a password-free ambassador application with full address an
   for (const name of ['name', 'phone', 'email', 'addressLine1', 'addressLine2', 'postalCode', 'city', 'region', 'country', 'social_instagram', 'social_facebook', 'social_tiktok', 'social_twitter', 'social_bluesky', 'social_youtube']) {
     assert.ok(html.includes(`name="${name}"`));
   }
-  for (const label of ['Instagram', 'Facebook', 'TikTok', 'X/Twitter', 'Bluesky', 'YouTube']) assert.ok(html.includes(`>${label}</label>`));
+  for (const label of ['Instagram', 'Facebook', 'TikTok', 'X (Twitter)', 'Bluesky', 'YouTube']) assert.ok(html.includes(`>${label}</label>`));
   assert.match(html, /type="tel"/);
   assert.match(html, /name="termsAccepted" type="checkbox" required/);
   assert.ok(!html.includes('checked'));
@@ -202,6 +243,8 @@ test('ticket rows show the validated product link and fetched product image', as
   assert.match(row, /src="https:\/\/cdn\.example\/produkt\.jpg"/);
   assert.match(row, /129,5 NOK/);
   assert.match(row, /Frisk &lt;b&gt;råvare&lt;\/b&gt;/);
+  assert.match(row, /mobile-ticket-card/);
+  assert.match(row, /Åpne samarbeid/);
   assert.equal(run("productLink('https://evil.example/product')"), '');
 });
 

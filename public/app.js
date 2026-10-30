@@ -50,6 +50,7 @@ let lastFocus;
 let modalTicketId = null;
 let mutating = false;
 let authVersion = 0;
+const dirtyForms = new WeakSet();
 
 async function api(path, { method = 'GET', body } = {}) {
   const version = authVersion;
@@ -135,10 +136,11 @@ async function login(email, password, button) {
   }
 }
 
-async function loadWorkspace() {
+async function loadWorkspace(cleanForm = null) {
   const version = authVersion;
   const data = await api('/workspace');
   if (version !== authVersion) return;
+  if (cleanForm) dirtyForms.delete(cleanForm);
   Object.assign(state, data);
   render();
 }
@@ -168,7 +170,7 @@ function render() {
   ];
   app.innerHTML = `<div class="shell"><aside class="sidebar">${brand()}<div class="nav-label">DITT ARBEIDSROM</div><nav class="nav" aria-label="Hovedmeny">${[
     ...links,
-  ].map(([page, symbol, label]) => `<button data-page="${page}" class="${state.page === page ? 'active' : ''}" ${state.page === page ? 'aria-current="page"' : ''}>${icon(symbol)}<span>${label}</span>${page === 'tickets' ? `<span class="count">${state.tickets.filter(active).length}</span>` : page === 'damage' ? `<span class="count">${state.damageReports.filter((report) => report.status === 'pending').length}</span>` : ''}</button>`).join('')}</nav>
+  ].map(([page, symbol, label]) => `<button data-page="${page}" ${['profiles', 'knowledge', 'damage', 'settings', 'admin'].includes(page) ? 'data-mobile-secondary' : ''} class="${state.page === page ? 'active' : ''}" ${state.page === page ? 'aria-current="page"' : ''}>${icon(symbol)}<span>${label}</span>${page === 'tickets' ? `<span class="count">${state.tickets.filter(active).length}</span>` : page === 'damage' ? `<span class="count">${state.damageReports.filter((report) => report.status === 'pending').length}</span>` : ''}</button>`).join('')}<button class="more-nav" data-action="more-menu" aria-label="Flere valg" aria-haspopup="dialog">${icon('plus')}<span>Mer</span></button></nav>
     <div class="sidebar-bottom"><div class="sidebar-note">${icon('leaf')}<h3>Vi brygger bedre sammen.</h3><p>En idé, et spørsmål eller litt inspirasjon? Vi er her for deg.</p><button data-action="help">Slik fungerer portalen ${icon('arrow')}</button></div><div class="side-user">${avatar(state.user)}<div><strong>${escape(state.user.name)}</strong><small>${employee() ? 'Ølbrygging-teamet' : 'Ambassadør'}</small></div><button data-action="logout" title="Logg ut" aria-label="Logg ut">${icon('logout')}</button></div></div></aside>
     <div class="workspace"><header class="topbar"><div class="mobile-brand" aria-label="Ølbrygging">ø</div><div class="breadcrumb">Ambassadørportalen ${icon('chevron')}<span>${titles[state.page]}</span></div><div class="top-tools"><div class="search">${icon('search')}<label class="sr-only" for="global-search">Søk i produkter og samarbeid</label><input id="global-search" type="search" placeholder="Søk i portalen …" value="${escape(state.query)}" maxlength="100"></div>${state.demoMode ? '<span class="demo-label">Demomodus</span>' : ''}<button class="icon-button" data-action="help" aria-label="Hjelp og informasjon" title="Hjelp">${icon('help')}</button>${avatar(state.user, 'green')}<button class="icon-button mobile-logout" data-action="logout" title="Logg ut" aria-label="Logg ut">${icon('logout')}</button></div></header>
     <main class="main" id="main-content">${pageContent()}</main></div></div>`;
@@ -218,7 +220,7 @@ function empty(message) {
 
 function ticketTable(tickets) {
   if (!tickets.length) return empty('Ingen samarbeid her ennå. Finn et produkt i katalogen for å komme i gang.');
-  return `<div class="table-wrap"><table><thead><tr><th>SAMARBEID / PRODUKT</th><th>STATUS</th><th class="due-column">FRIST</th><th><span class="sr-only">Åpne</span></th></tr></thead><tbody>${tickets.map((ticket, index) => {
+  const rows = tickets.map((ticket, index) => {
     const item = ticketProduct(ticket);
     const href = productLink(ticket.productUrl);
     const name = item?.name || ticket.subject;
@@ -227,7 +229,14 @@ function ticketTable(tickets) {
       item.description ? escape(item.description) : '',
     ].filter(Boolean).join(' · ');
     return `<tr data-ticket="${escape(ticket.id)}"><td><div class="ticket-cell"><div class="mini-product">${productVisual(item, index)}</div><div><strong>${href ? `<a class="product-title-link" href="${escape(href)}" target="_blank" rel="noopener noreferrer">${escape(name)}</a>` : escape(name)}</strong><small>#${escape(ticket.number)} · ${employee() ? escape(person(ticket.ambassadorId)?.name) : escape(ticket.channel)}</small>${details ? `<small class="ticket-product-details">${details}</small>` : ''}</div></div></td><td>${pill(ticket.status)}</td><td class="due due-column">${date(ticket.dueDate)}</td><td><button class="row-arrow" data-ticket="${escape(ticket.id)}" aria-label="Åpne ${escape(ticket.subject)}">${icon('chevron')}</button></td></tr>`;
-  }).join('')}</tbody></table></div>`;
+  });
+  const cards = tickets.map((ticket, index) => {
+    const item = ticketProduct(ticket);
+    const href = productLink(ticket.productUrl);
+    const name = item?.name || ticket.subject;
+    return `<article class="mobile-ticket-card"><div class="mobile-ticket-product"><div class="mini-product">${productVisual(item, index)}</div><div class="mobile-ticket-title"><strong>${href ? `<a class="product-title-link" href="${escape(href)}" target="_blank" rel="noopener noreferrer">${escape(name)}</a>` : escape(name)}</strong><small>#${escape(ticket.number)} · ${employee() ? escape(person(ticket.ambassadorId)?.name) : escape(ticket.channel)}</small></div></div><div class="mobile-ticket-meta">${pill(ticket.status)}<span>${icon('clock')}${date(ticket.dueDate)}</span></div><button class="secondary mobile-ticket-open" data-ticket="${escape(ticket.id)}">Åpne samarbeid ${icon('arrow')}</button></article>`;
+  }).join('');
+  return `<div class="table-wrap desktop-ticket-table"><table><thead><tr><th>SAMARBEID / PRODUKT</th><th>STATUS</th><th class="due-column">FRIST</th><th><span class="sr-only">Åpne</span></th></tr></thead><tbody>${rows.join('')}</tbody></table></div><div class="mobile-ticket-list">${cards}</div>`;
 }
 
 function ticketsPage() {
@@ -312,6 +321,16 @@ function closeModal() {
 
 function modalHead(title, eyebrow = '') {
   return `<header class="modal-head"><div>${eyebrow ? `<div class="eyebrow">${eyebrow}</div>` : ''}<h2 id="modal-title">${title}</h2></div><button class="icon-button" data-action="close" aria-label="Lukk">${icon('close')}</button></header>`;
+}
+
+function moreMenu() {
+  const pages = [
+    ['profiles', 'user', employee() ? 'Ambassadører' : 'Min profil'],
+    ['knowledge', 'book', 'Kunnskapsbase'], ['damage', 'warning', 'Skademeldinger'],
+    ['settings', 'settings', 'Innstillinger'],
+    ...(state.user?.role === 'admin' ? [['admin', 'user', 'Brukeradministrasjon']] : []),
+  ];
+  showModal(`${modalHead('Flere valg', 'Ambassadørportalen')}<nav class="more-menu" aria-label="Flere sider">${pages.map(([page, symbol, label]) => `<button class="secondary" data-page="${page}" ${state.page === page ? 'aria-current="page"' : ''}>${icon(symbol)}<span>${label}</span>${state.page === page ? '<span class="sr-only">Nåværende side</span>' : ''}</button>`).join('')}<button class="secondary" data-action="help">${icon('help')}<span>Hjelp og informasjon</span></button></nav>`);
 }
 
 const socialPlatforms = [
@@ -433,7 +452,10 @@ document.addEventListener('click', async (event) => {
     return;
   }
   if (button.dataset.demo && state.demoMode) return login(`${button.dataset.demo}@olbrygging.example`, 'BrewTogether!2026', button);
-  if (button.dataset.page) return navigate(button.dataset.page);
+  if (button.dataset.page) {
+    if (modalRoot.hasChildNodes()) closeModal();
+    return navigate(button.dataset.page);
+  }
   if (button.dataset.filter) {
     state.filter = button.dataset.filter;
     document.querySelector('#main-content').innerHTML = pageContent();
@@ -462,6 +484,7 @@ document.addEventListener('click', async (event) => {
     return;
   }
   if (button.dataset.action === 'close') return closeModal();
+  if (button.dataset.action === 'more-menu') return moreMenu();
   if (button.dataset.action === 'apply-ambassador') return applyAmbassador();
   if (button.dataset.action === 'preview-product') {
     const form = button.closest('#request-form');
@@ -521,12 +544,12 @@ document.addEventListener('submit', async (event) => {
     if (form.id === 'request-form') {
       const body = { ...Object.fromEntries(fields), productId: form.dataset.productId };
       const { ticket } = await api('/tickets', { method: 'POST', body });
-      await loadWorkspace();
+      await loadWorkspace(form);
       ticketDetail(ticket.id);
       toast('Forespørselen er sendt. Nå begynner et godt samarbeid!');
     } else if (form.id === 'message-form') {
       const { message } = await api(`/tickets/${encodeURIComponent(form.dataset.ticketId)}/messages`, { method: 'POST', body: { body: fields.get('body'), sendEmail: fields.has('sendEmail') } });
-      await loadWorkspace();
+      await loadWorkspace(form);
       ticketDetail(form.dataset.ticketId);
       modalRoot.querySelector('.drawer-scroll').scrollTop = modalRoot.querySelector('.drawer-scroll').scrollHeight;
       modalRoot.querySelector('#message-body').focus();
@@ -535,13 +558,13 @@ document.addEventListener('submit', async (event) => {
       const body = Object.fromEntries(fields);
       const path = employee() ? `/users/${encodeURIComponent(form.dataset.userId)}` : '/profile';
       await api(path, { method: 'PATCH', body });
-      await loadWorkspace();
+      await loadWorkspace(form);
       toast('Profilen er oppdatert.');
     } else if (form.id === 'article-form') {
       const path = form.dataset.articleId ? `/articles/${encodeURIComponent(form.dataset.articleId)}` : '/articles';
       await api(path, { method: form.dataset.articleId ? 'PATCH' : 'POST', body: Object.fromEntries(fields) });
       state.editArticle = null;
-      await loadWorkspace();
+      await loadWorkspace(form);
       toast('Artikkelen er lagret.');
     } else if (form.id === 'damage-form') {
       const body = Object.fromEntries(fields);
@@ -549,17 +572,17 @@ document.addEventListener('submit', async (event) => {
       if (!body.productId) delete body.productId;
       if (!body.ticketId) delete body.ticketId;
       await api('/damage-reports', { method: 'POST', body });
-      await loadWorkspace();
+      await loadWorkspace(form);
       toast('Skademeldingen er sendt.');
     } else if (form.id === 'admin-create-form') {
       await api('/users', { method: 'POST', body: Object.fromEntries(fields) });
-      await loadWorkspace();
+      await loadWorkspace(form);
       toast('Brukeren er opprettet.');
     } else {
       const body = { active: fields.has('active') };
       if (fields.has('role')) body.role = fields.get('role');
       await api(`/users/${encodeURIComponent(form.dataset.userId)}`, { method: 'PATCH', body });
-      await loadWorkspace();
+      await loadWorkspace(form);
       toast('Brukertilgangen er oppdatert.');
     }
   } catch (error) {
@@ -572,6 +595,7 @@ document.addEventListener('submit', async (event) => {
 });
 
 document.addEventListener('input', (event) => {
+  if (event.target.form && event.target.form.id !== 'login-form') dirtyForms.add(event.target.form);
   if (event.target.id !== 'global-search') return;
   state.query = event.target.value;
   document.querySelector('#main-content').innerHTML = pageContent();
@@ -579,6 +603,7 @@ document.addEventListener('input', (event) => {
 
 document.addEventListener('change', async (event) => {
   const field = event.target;
+  if (field.form && field.form.id !== 'login-form') dirtyForms.add(field.form);
   if (field.matches?.('[data-profile-select]')) {
     state.profileId = field.value;
     return document.querySelector('#main-content').innerHTML = pageContent();
@@ -656,7 +681,8 @@ setInterval(async () => {
     if (version !== authVersion || !state.user || data.user.id !== state.user.id || mutating
       || ['tickets', 'articles', 'damageReports', 'users', 'products'].every((key) => JSON.stringify(data[key]) === JSON.stringify(state[key]))) return;
     const focused = document.activeElement;
-    if (modalTicketId && focused?.matches('select,input')) return;
+    if (focused?.matches('input,textarea,select,[contenteditable="true"]')
+      || [...document.querySelectorAll('form')].some((form) => dirtyForms.has(form))) return;
     const id = modalTicketId;
     const composer = modalRoot.querySelector('#message-body');
     const draft = composer?.value || '';
