@@ -15,6 +15,7 @@ migrate((app) => {
   users.manageRule = null;
   users.fields.add(new TextField({ name: "name", required: true, max: 160 }));
   users.fields.add(new SelectField({ name: "role", required: true, maxSelect: 1, values: ["employee", "ambassador"] }));
+  users.fields.add(new TextField({ name: "socialMedia", max: 200 }));
   users.passwordAuth = { enabled: true, identityFields: ["email"] };
   users.authToken = { duration: 43200 };
   app.save(users);
@@ -46,6 +47,8 @@ migrate((app) => {
       new NumberField({ name: "number", required: true, onlyInt: true, min: 1001 }),
       new TextField({ name: "subject", required: true, max: 160 }),
       new TextField({ name: "description", required: true, max: 5000 }),
+      new TextField({ name: "productUrl", max: 2000 }),
+      new JSONField({ name: "productSnapshot" }),
       new RelationField({ name: "productId", required: true, maxSelect: 1, collectionId: products.id }),
       new RelationField({ name: "ambassadorId", required: true, maxSelect: 1, collectionId: users.id }),
       new RelationField({ name: "assigneeId", required: true, maxSelect: 1, collectionId: users.id }),
@@ -62,6 +65,32 @@ migrate((app) => {
   });
   app.save(tickets);
 
+  app.save(collection({
+    type: "base", name: "articles",
+    fields: [
+      new TextField({ name: "title", required: true, max: 160 }),
+      new TextField({ name: "body", required: true, max: 12000 }),
+      new TextField({ name: "category", required: true, max: 60 }),
+      new RelationField({ name: "authorId", required: true, maxSelect: 1, collectionId: users.id }),
+      new RelationField({ name: "updatedBy", required: true, maxSelect: 1, collectionId: users.id }),
+      ...timestamps(),
+    ],
+    indexes: ["CREATE INDEX idx_articles_updated ON articles (updatedAt DESC)"],
+  }));
+  app.save(collection({
+    type: "base", name: "damage_reports",
+    fields: [
+      new RelationField({ name: "ambassadorId", required: true, maxSelect: 1, collectionId: users.id }),
+      new RelationField({ name: "productId", maxSelect: 1, collectionId: products.id }),
+      new RelationField({ name: "ticketId", maxSelect: 1, collectionId: tickets.id }),
+      new TextField({ name: "description", required: true, max: 5000 }),
+      new SelectField({ name: "status", required: true, maxSelect: 1, values: ["pending", "approved", "rejected"] }),
+      new RelationField({ name: "reviewedBy", maxSelect: 1, collectionId: users.id }),
+      new TextField({ name: "reviewNote", max: 1000 }),
+      ...timestamps(),
+    ],
+    indexes: ["CREATE INDEX idx_damage_reports_created ON damage_reports (createdAt DESC)"],
+  }));
   const readsMessage = authenticated + " && (@request.auth.role = 'employee' || ticketId.ambassadorId = @request.auth.id)";
   app.save(collection({
     type: "base", name: "messages", listRule: readsMessage, viewRule: readsMessage,
@@ -104,11 +133,12 @@ migrate((app) => {
     app.save(record);
   }
 }, (app) => {
-  for (const name of ["messages", "tickets", "portal_counters", "products"]) {
+  for (const name of ["messages", "damage_reports", "articles", "tickets", "portal_counters", "products"]) {
     app.delete(app.findCollectionByNameOrId(name));
   }
   // Keep accounts and their roles private on rollback rather than reopening signup.
   const users = app.findCollectionByNameOrId("users");
   users.fields.removeByName("role");
+  users.fields.removeByName("socialMedia");
   app.save(users);
 });

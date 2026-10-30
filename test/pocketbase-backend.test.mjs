@@ -134,7 +134,7 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
         token, method: 'PATCH', body: { role: 'employee', raw_user_meta_data: { role: 'employee' } },
       });
       await expect(403, `/api/collections/users/records/${users.ambassador.id}`, { token, method: 'DELETE' });
-      for (const collection of ['products', 'tickets', 'messages', 'portal_counters']) {
+      for (const collection of ['products', 'tickets', 'messages', 'portal_counters', 'articles', 'damage_reports']) {
         await expect(403, `/api/collections/${collection}/records`, { token, method: 'POST', body: {} });
       }
     }
@@ -155,13 +155,18 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
   await t.test('workspace projects only safe relevant users with email, and catalogue slug ids', async () => {
     const workspace = await expect(200, '/api/portal/workspace', { token: tokens.ambassador });
     assert.deepEqual(workspace.user, {
-      id: users.ambassador.id, name: 'ambassador', email: 'ambassador@example.invalid', role: 'ambassador',
+      id: users.ambassador.id, name: 'ambassador', email: 'ambassador@example.invalid',
+      role: 'ambassador', active: true, socialMedia: '',
     });
     assert.deepEqual(workspace.tickets, []);
+    assert.deepEqual(workspace.articles, []);
+    assert.deepEqual(workspace.damageReports, []);
     assert.equal(workspace.products.length, 8);
     assert.ok(workspace.products.some((item) => item.id === 'fjord-pale' && item.price === 449));
     assert.deepEqual(new Set(workspace.users.map((user) => user.id)), new Set([users.ambassador.id, users.employee.id]));
-    for (const user of workspace.users) assert.deepEqual(Object.keys(user).sort(), ['email', 'id', 'name', 'role']);
+    for (const user of workspace.users) {
+      assert.deepEqual(Object.keys(user).sort(), ['active', 'email', 'id', 'name', 'role', 'socialMedia']);
+    }
     const employeeWorkspace = await expect(200, '/api/portal/workspace', { token: tokens.employee });
     assert.equal(employeeWorkspace.users.length, 3);
     const products = await expect(200, '/api/collections/products/records', { token: tokens.ambassador });
@@ -213,6 +218,61 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
     })).ticket;
     assert.equal(otherTicket.number, 1002);
     assert.equal(otherTicket.dueDate, null);
+  });
+
+  await t.test('profiles, articles and damage reports use authenticated transactional routes', async () => {
+    for (const token of [tokens.ambassador, tokens.employee]) {
+      for (const collection of ['articles', 'damage_reports']) {
+        await expect(403, `/api/collections/${collection}/records`, { token });
+        await expect(403, `/api/collections/${collection}/records`, { token, method: 'POST', body: {} });
+      }
+    }
+    const self = await expect(200, '/api/portal/profile', {
+      token: tokens.ambassador, method: 'PATCH', body: { socialMedia: '@bryggeren' },
+    });
+    assert.equal(self.user.socialMedia, '@bryggeren');
+    assert.equal((await expect(200, '/api/portal/workspace', { token: tokens.ambassador })).user.socialMedia, '@bryggeren');
+    await expect(400, '/api/portal/profile', { token: tokens.ambassador, method: 'PATCH', body: { role: 'employee' } });
+
+    const profile = await expect(200, `/api/portal/users/${users.ambassador.id}`, {
+      token: tokens.employee, method: 'PATCH', body: { socialMedia: '@oppdatert' },
+    });
+    assert.equal(profile.user.socialMedia, '@oppdatert');
+    await expect(403, `/api/portal/users/${users.other.id}`, {
+      token: tokens.ambassador, method: 'PATCH', body: { name: 'Ikke tillatt' },
+    });
+
+    await expect(403, '/api/portal/articles', {
+      token: tokens.ambassador, method: 'POST', body: { title: 'Nei', body: 'Nei', category: 'Test' },
+    });
+    const article = await expect(201, '/api/portal/articles', {
+      token: tokens.employee, method: 'POST',
+      body: { title: 'Bryggeguide', body: 'Oppbevar råvarene tørt.', category: 'Bryggetips' },
+    });
+    assert.equal(article.article.authorId, users.employee.id);
+    assert.match(article.article.createdAt, isoTimestamp);
+    assert.equal((await expect(200, '/api/portal/articles', { token: tokens.ambassador })).articles.length, 1);
+    const updatedArticle = await expect(200, `/api/portal/articles/${article.article.id}`, {
+      token: tokens.employee, method: 'PATCH', body: { title: 'Oppdatert guide' },
+    });
+    assert.equal(updatedArticle.article.title, 'Oppdatert guide');
+
+    const report = await expect(201, '/api/portal/damage-reports', {
+      token: tokens.ambassador, method: 'POST',
+      body: { productId: 'fjord-pale', ticketId: ticket.id, description: 'Esken var skadet.' },
+    });
+    assert.equal(report.report.ambassadorId, users.ambassador.id);
+    assert.equal(report.report.productId, 'fjord-pale');
+    assert.equal(report.report.ticketId, ticket.id);
+    await expect(403, `/api/portal/damage-reports/${report.report.id}`, {
+      token: tokens.ambassador, method: 'PATCH', body: { status: 'approved' },
+    });
+    const reviewed = await expect(200, `/api/portal/damage-reports/${report.report.id}`, {
+      token: tokens.employee, method: 'PATCH', body: { status: 'approved', reviewNote: 'Erstattes.' },
+    });
+    assert.equal(reviewed.report.reviewNote, 'Erstattes.');
+    assert.equal((await expect(200, '/api/portal/workspace', { token: tokens.ambassador })).damageReports.length, 1);
+    assert.deepEqual((await expect(200, '/api/portal/workspace', { token: tokens.other })).damageReports, []);
   });
 
   await t.test('owners and employees read tickets; unrelated accounts cannot read, update or message them', async () => {
@@ -343,6 +403,9 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
       pocketbaseUrl: base, secureCookies: false, dataFile,
       pocketbaseAdminEmail: adminEmail, pocketbaseAdminPassword: password,
       emailApiKey: randomBytes(24).toString('hex'), emailFrom: 'portal@example.invalid',
+      fetchProductPage: async () => new Response('<html><head><title>Fetched product</title></head></html>', {
+        headers: { 'content-type': 'text/html' },
+      }),
       fetchEmail: async (url, options) => {
         assert.equal(url, 'https://api.resend.com/emails');
         const delivery = JSON.parse(options.body);
@@ -390,10 +453,18 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
       assert.equal(workspace.emailConfigured, true);
       assert.equal(workspace.user.email, 'ambassador@example.invalid');
       assert.ok(workspace.products.some((product) => product.id === 'fjord-pale'));
+      const preview = await portal('/products/preview', {
+        method: 'POST', body: { url: 'https://www.olbrygging.no/produkt/test' },
+      });
+      assert.equal(preview.product.name, 'Fetched product');
       await portal('/tickets', { method: 'POST', body: draft, origin: 'https://unrelated.example.invalid', status: 403 });
-      nodeTicket = (await portal('/tickets', { method: 'POST', body: draft, status: 201 })).ticket;
+      nodeTicket = (await portal('/tickets', {
+        method: 'POST', body: { ...draft, productUrl: 'https://www.olbrygging.no/produkt/test' }, status: 201,
+      })).ticket;
       assert.match(nodeTicket.id, /^[a-z0-9]{15}$/);
       assert.equal(nodeTicket.productId, 'fjord-pale');
+      assert.equal(nodeTicket.productSnapshot.name, 'Fetched product');
+      assert.equal(nodeTicket.productUrl, 'https://www.olbrygging.no/produkt/test');
       assert.equal(nodeTicket.number, 1015);
       const updated = (await portal(`/tickets/${nodeTicket.id}`, {
         role: 'employee', method: 'PATCH', body: { status: 'approved', assigneeId: users.employee.id, dueDate: null },

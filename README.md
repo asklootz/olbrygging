@@ -9,6 +9,9 @@ A Norwegian-language ambassador CRM for Ølbrygging AS, with PocketBase-backed a
 - Persistent ticket conversations, email drafts, and optional outbound email notifications.
 - PocketBase password authentication, SQLite persistence, and backend-enforced role and ticket access checks.
 - A dependency-free local demo with password authentication and JSON storage.
+- Ambassador profiles, employee task filters, a searchable knowledge base, and product damage reports.
+- Browser-saved display/notification preferences and administrator-only account management.
+- Password authentication and server-side role and ticket access checks.
 - Responsive desktop/mobile layouts and keyboard-accessible dialogs.
 - Installable PWA with a cached public app shell and mobile safe-area support.
 
@@ -54,8 +57,11 @@ Without `POCKETBASE_URL`, `npm start` retains the standalone local demo. Remove 
 | Employee | `employee@olbrygging.example` | `BrewTogether!2026` |
 | Second ambassador | `sara@olbrygging.example` | `BrewTogether!2026` |
 | Second employee | `marius@olbrygging.example` | `BrewTogether!2026` |
+| Administrator | `admin@olbrygging.example` | `BrewTogether!2026` |
 
 These are public **demo credentials**, not real accounts. Catalogue products, people, and conversations are fictional examples. When creating a ticket, provide a product page URL from `www.olbrygging.no` to fetch product details for the ticket; this does not make the example catalogue or ticket workflow a live commerce integration.
+
+In local demo mode, the administrator account can create employee and ambassador accounts from **Brukeradministrasjon**. New accounts require a temporary password of at least 12 characters. PocketBase account and role administration remains restricted to superusers; the app does not send invitations or password-reset messages.
 
 ### Try the workflow
 

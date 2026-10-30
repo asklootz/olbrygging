@@ -3,6 +3,9 @@ import { ApiError, checkFields, readBody, text } from './api.mjs';
 const AUTH_COOKIE = 'olbrygging_pb_auth';
 const MAX_COOKIE_AGE = 60 * 60 * 12;
 const safeUser = ({ id, name, email, role }) => ({ id, name, email, role });
+const safeWorkspaceUser = ({ id, name, email, role, socialMedia }) => ({
+  ...safeUser({ id, name, email, role }), active: true, socialMedia: socialMedia || '',
+});
 const validToken = (token) => typeof token === 'string' && token.length <= 3800
   && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token);
 const unavailable = () => new ApiError(503, 'PocketBase er utilgjengelig. Prøv igjen.');
@@ -157,11 +160,59 @@ export function createPocketbaseApi(options) {
     if (!auth) throw new ApiError(401, 'Logg inn for å fortsette.');
     if (pathname === '/api/workspace') {
       const workspace = await request('/api/portal/workspace', { token: auth.token });
-      return { status: 200, body: { ...workspace, user: auth.user, users: workspace.users.map(safeUser), emailConfigured } };
+      return {
+        status: 200,
+        body: { ...workspace, user: safeWorkspaceUser(workspace.user), users: workspace.users.map(safeWorkspaceUser), emailConfigured },
+      };
+    }
+    if (pathname === '/api/products/preview') {
+      const input = await readBody(req);
+      checkFields(input, ['url']);
+      return { status: 200, body: { product: await options.readProductPage(input.url) } };
+    }
+    if (pathname === '/api/profile') {
+      const input = await readBody(req);
+      checkFields(input, ['name', 'email', 'socialMedia']);
+      return { status: 200, body: await request('/api/portal/profile', { token: auth.token, method: 'PATCH', body: input }) };
+    }
+    const userMatch = pathname.match(/^\/api\/users\/([a-z0-9]{15})$/);
+    if (userMatch) {
+      const input = await readBody(req);
+      checkFields(input, ['name', 'email', 'socialMedia']);
+      return { status: 200, body: await request(`/api/portal/users/${userMatch[1]}`, { token: auth.token, method: 'PATCH', body: input }) };
+    }
+    if (pathname === '/api/users') throw new ApiError(403, 'Brukere og roller administreres av en PocketBase-superbruker.');
+    if (pathname === '/api/articles') {
+      if (req.method === 'GET') return { status: 200, body: await request('/api/portal/articles', { token: auth.token }) };
+      const input = await readBody(req);
+      checkFields(input, ['title', 'body', 'category']);
+      return { status: 201, body: await request('/api/portal/articles', { token: auth.token, method: 'POST', body: input }) };
+    }
+    const articleMatch = pathname.match(/^\/api\/articles\/([a-z0-9]{15})$/);
+    if (articleMatch) {
+      const input = await readBody(req);
+      checkFields(input, ['title', 'body', 'category']);
+      return { status: 200, body: await request(`/api/portal/articles/${articleMatch[1]}`, { token: auth.token, method: 'PATCH', body: input }) };
+    }
+    if (pathname === '/api/damage-reports') {
+      const input = await readBody(req);
+      checkFields(input, ['productId', 'description', 'ticketId']);
+      return { status: 201, body: await request('/api/portal/damage-reports', { token: auth.token, method: 'POST', body: input }) };
+    }
+    const reportMatch = pathname.match(/^\/api\/damage-reports\/([a-z0-9]{15})$/);
+    if (reportMatch) {
+      const input = await readBody(req);
+      checkFields(input, ['status', 'reviewNote']);
+      return { status: 200, body: await request(`/api/portal/damage-reports/${reportMatch[1]}`, { token: auth.token, method: 'PATCH', body: input }) };
     }
     const input = await readBody(req);
     if (pathname === '/api/tickets') {
-      checkFields(input, ['productId', 'subject', 'description', 'channel', 'dueDate', 'ambassadorId']);
+      checkFields(input, ['productId', 'productUrl', 'subject', 'description', 'channel', 'dueDate', 'ambassadorId']);
+      if (input.productUrl !== undefined) {
+        const productSnapshot = await options.readProductPage(input.productUrl);
+        input.productUrl = productSnapshot.url;
+        input.productSnapshot = productSnapshot;
+      }
       return { status: 201, body: await request('/api/portal/tickets', { token: auth.token, method: 'POST', body: input }) };
     }
     const ticketId = pathname.split('/')[3];

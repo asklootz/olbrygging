@@ -34,7 +34,32 @@ function actor(app, id) {
 }
 
 function safeUser(user) {
-  return { id: user.id, name: user.getString("name"), email: user.getString("email"), role: user.getString("role") };
+  return {
+    id: user.id, name: user.getString("name"), email: user.getString("email"),
+    role: user.getString("role"), active: true, socialMedia: user.getString("socialMedia"),
+  };
+}
+
+function articleJSON(article) {
+  return {
+    id: article.id, title: article.getString("title"), body: article.getString("body"),
+    category: article.getString("category"), authorId: article.getString("authorId"),
+    updatedBy: article.getString("updatedBy"), createdAt: timestamp(article, "createdAt"),
+    updatedAt: timestamp(article, "updatedAt"),
+  };
+}
+
+function damageReportJSON(app, report) {
+  const productId = report.getString("productId");
+  let productSlug = null;
+  if (productId) productSlug = app.findRecordById("products", productId).getString("slug");
+  return {
+    id: report.id, ambassadorId: report.getString("ambassadorId"),
+    productId: productSlug, ticketId: report.getString("ticketId") || null,
+    description: report.getString("description"), status: report.getString("status"),
+    createdAt: timestamp(report, "createdAt"), reviewedBy: report.getString("reviewedBy") || null,
+    reviewNote: report.getString("reviewNote"),
+  };
 }
 
 function productJSON(product) {
@@ -63,6 +88,7 @@ function ticketJSON(app, ticket) {
   return {
     id: ticket.id, number: ticket.getInt("number"), subject: ticket.getString("subject"),
     description: ticket.getString("description"), productId: product.getString("slug"),
+    productUrl: ticket.getString("productUrl"), productSnapshot: ticket.get("productSnapshot") || null,
     ambassadorId: ticket.getString("ambassadorId"), assigneeId: ticket.getString("assigneeId"),
     status: ticket.getString("status"), channel: ticket.getString("channel"),
     dueDate: ticket.getString("dueDate") || null,
@@ -90,6 +116,35 @@ function userWithRole(app, id, role) {
   }
   if (user.getString("role") !== role) throw new BadRequestError("Ugyldig brukerrolle.");
   return user;
+}
+
+function profileFields(input) {
+  fields(input, ["name", "email", "socialMedia"]);
+  if (!Object.keys(input).length) throw new BadRequestError("Ingen endringer er oppgitt.");
+  const result = {};
+  if (input.name !== undefined) result.name = text(input.name, 160);
+  if (input.email !== undefined) {
+    const email = text(input.email, 254).toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new BadRequestError("Oppgi en gyldig e-postadresse.");
+    result.email = email;
+  }
+  if (input.socialMedia !== undefined) {
+    result.socialMedia = input.socialMedia === "" ? "" : text(input.socialMedia, 200);
+  }
+  return result;
+}
+
+function saveProfile(app, user, input) {
+  const changes = profileFields(input);
+  if (changes.email !== undefined) {
+    const users = app.findRecordsByFilter("users", "", "", 0, 0);
+    if (users.some((record) => record.id !== user.id && record.getString("email").toLowerCase() === changes.email)) {
+      throw new ApiError(409, "E-postadressen er allerede i bruk.");
+    }
+  }
+  for (const [key, value] of Object.entries(changes)) user.set(key, value);
+  app.save(user);
+  return safeUser(user);
 }
 
 function body(e) {
@@ -120,17 +175,165 @@ module.exports = {
           .map(safeUser),
         products: app.findRecordsByFilter("products", "", "createdAt,id", 0, 0).map(productJSON),
         tickets,
+        articles: app.findRecordsByFilter("articles", "", "-updatedAt,id", 0, 0).map(articleJSON),
+        damageReports: app.findRecordsByFilter("damage_reports", employee ? "" : "ambassadorId = {:id}", "-createdAt,id", 0, 0, { id: user.id }).map((record) => damageReportJSON(app, record)),
       };
     });
     return e.json(200, result);
   },
 
+  profile(e) {
+    const input = body(e);
+    let result;
+    e.app.runInTransaction((app) => {
+      const user = actor(app, e.auth.id);
+      result = saveProfile(app, user, input);
+    });
+    return e.json(200, { user: result });
+  },
+
+  updateUser(e) {
+    const input = body(e);
+    let result;
+    e.app.runInTransaction((app) => {
+      const user = actor(app, e.auth.id);
+      if (user.getString("role") !== "employee") throw new ForbiddenError("Bare ansatte kan redigere ambassadørprofiler.");
+      const target = userWithRole(app, e.request.pathValue("id"), "ambassador");
+      result = saveProfile(app, target, input);
+    });
+    return e.json(200, { user: result });
+  },
+
+  articles(e) {
+    let result;
+    e.app.runInTransaction((app) => {
+      actor(app, e.auth.id);
+      result = app.findRecordsByFilter("articles", "", "-updatedAt,id", 0, 0).map(articleJSON);
+    });
+    return e.json(200, { articles: result });
+  },
+
+  createArticle(e) {
+    const input = body(e);
+    fields(input, ["title", "body", "category"]);
+    const title = text(input.title, 160);
+    const content = text(input.body, 12000);
+    const category = text(input.category, 60);
+    let result;
+    e.app.runInTransaction((app) => {
+      const user = actor(app, e.auth.id);
+      if (user.getString("role") !== "employee") throw new ForbiddenError("Bare ansatte kan publisere artikler.");
+      const article = new Record(app.findCollectionByNameOrId("articles"));
+      for (const [key, value] of Object.entries({
+        title, body: content, category, authorId: user.id, updatedBy: user.id,
+      })) article.set(key, value);
+      app.save(article);
+      result = articleJSON(article);
+    });
+    return e.json(201, { article: result });
+  },
+
+  updateArticle(e) {
+    const input = body(e);
+    fields(input, ["title", "body", "category"]);
+    if (!Object.keys(input).length) throw new BadRequestError("Ingen endringer er oppgitt.");
+    let result;
+    e.app.runInTransaction((app) => {
+      const user = actor(app, e.auth.id);
+      if (user.getString("role") !== "employee") throw new ForbiddenError("Bare ansatte kan redigere artikler.");
+      let article;
+      try { article = app.findRecordById("articles", e.request.pathValue("id")); } catch (_) {
+        throw new NotFoundError("Fant ikke artikkelen.");
+      }
+      if (input.title !== undefined) article.set("title", text(input.title, 160));
+      if (input.body !== undefined) article.set("body", text(input.body, 12000));
+      if (input.category !== undefined) article.set("category", text(input.category, 60));
+      article.set("updatedBy", user.id);
+      app.save(article);
+      result = articleJSON(article);
+    });
+    return e.json(200, { article: result });
+  },
+
+  createDamageReport(e) {
+    const input = body(e);
+    fields(input, ["productId", "description", "ticketId"]);
+    const description = text(input.description, 5000);
+    let result;
+    e.app.runInTransaction((app) => {
+      const user = actor(app, e.auth.id);
+      if (user.getString("role") !== "ambassador") throw new ForbiddenError("Skademeldinger kan bare opprettes av ambassadører.");
+      let productId = "";
+      if (input.productId !== undefined && input.productId !== "") {
+        const slug = text(input.productId, 100);
+        const products = app.findRecordsByFilter("products", "slug = {:slug}", "", 1, 0, { slug });
+        if (!products.length) throw new BadRequestError("Velg et gyldig produkt.");
+        productId = products[0].id;
+      }
+      let ticketId = "";
+      if (input.ticketId !== undefined && input.ticketId !== "") {
+        const ticket = authorizedTicket(app, text(input.ticketId, 100), user);
+        if (!productId || ticket.getString("productId") !== productId) throw new BadRequestError("Produktet må stemme med samarbeidet.");
+        ticketId = ticket.id;
+      }
+      const report = new Record(app.findCollectionByNameOrId("damage_reports"));
+      for (const [key, value] of Object.entries({
+        ambassadorId: user.id, productId, ticketId, description, status: "pending",
+        reviewedBy: "", reviewNote: "",
+      })) report.set(key, value);
+      app.save(report);
+      result = damageReportJSON(app, report);
+    });
+    return e.json(201, { report: result });
+  },
+
+  reviewDamageReport(e) {
+    const input = body(e);
+    fields(input, ["status", "reviewNote"]);
+    if (["approved", "rejected"].indexOf(input.status) < 0) throw new BadRequestError("Velg godkjent eller avslått.");
+    let result;
+    e.app.runInTransaction((app) => {
+      const user = actor(app, e.auth.id);
+      if (user.getString("role") !== "employee") throw new ForbiddenError("Bare ansatte kan behandle skademeldinger.");
+      let report;
+      try { report = app.findRecordById("damage_reports", e.request.pathValue("id")); } catch (_) {
+        throw new NotFoundError("Fant ikke skademeldingen.");
+      }
+      report.set("status", input.status);
+      report.set("reviewedBy", user.id);
+      if (input.reviewNote !== undefined) report.set("reviewNote", input.reviewNote === "" ? "" : text(input.reviewNote, 1000));
+      app.save(report);
+      result = damageReportJSON(app, report);
+    });
+    return e.json(200, { report: result });
+  },
+
   create(e) {
     const input = body(e);
-    fields(input, ["productId", "subject", "description", "channel", "dueDate", "ambassadorId"]);
+    fields(input, ["productId", "productUrl", "productSnapshot", "subject", "description", "channel", "dueDate", "ambassadorId"]);
     const subject = text(input.subject, 160);
     const description = text(input.description, 5000);
     const slug = text(input.productId, 100);
+    const productUrl = input.productUrl === undefined ? "" : text(input.productUrl, 2000);
+    let productSnapshot = null;
+    if (input.productSnapshot !== undefined) {
+      const snapshot = input.productSnapshot;
+      fields(snapshot, ["url", "name", "description", "price", "currency", "image"]);
+      if (!productUrl || snapshot.url !== productUrl || !/^https:\/\/www\.olbrygging\.no\/.+/i.test(productUrl)) {
+        throw new BadRequestError("Ugyldig produktlenke eller produktinformasjon.");
+      }
+      if (typeof snapshot.name !== "string" || !snapshot.name.trim() || snapshot.name.length > 300
+        || typeof snapshot.description !== "string" || snapshot.description.length > 2000
+        || (snapshot.price !== null && (typeof snapshot.price !== "number" || !isFinite(snapshot.price) || snapshot.price < 0))
+        || (snapshot.currency !== null && (typeof snapshot.currency !== "string" || snapshot.currency.length > 12))
+        || (snapshot.image !== null && (typeof snapshot.image !== "string" || snapshot.image.length > 2000 || !/^https:\/\//i.test(snapshot.image)))) {
+        throw new BadRequestError("Ugyldig produktinformasjon.");
+      }
+      productSnapshot = {
+        url: productUrl, name: snapshot.name.trim(), description: snapshot.description,
+        price: snapshot.price, currency: snapshot.currency, image: snapshot.image,
+      };
+    }
     if (["Instagram", "TikTok", "YouTube", "Blogg", "Annet"].indexOf(input.channel) < 0) throw new BadRequestError("Ugyldig kanal.");
     const dueDate = input.dueDate === undefined ? "" : date(input.dueDate);
     let result;
@@ -153,7 +356,7 @@ module.exports = {
       const ticket = new Record(app.findCollectionByNameOrId("tickets"));
       for (const [key, value] of Object.entries({
         number, subject, description, productId: products[0].id, ambassadorId,
-        assigneeId: employees[0].id, status: "requested", channel: input.channel, dueDate,
+        productUrl, productSnapshot, assigneeId: employees[0].id, status: "requested", channel: input.channel, dueDate,
       })) ticket.set(key, value);
       app.save(ticket);
       result = ticketJSON(app, ticket);

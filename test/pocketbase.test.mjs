@@ -198,11 +198,22 @@ test('malformed provider tokens, records and expiry never become cookies or clie
 test('CRM mutations route directly to portal with refreshed user authorization only', async (t) => {
   const { call, calls, setHandler } = await fixture(t, {
     pocketbaseAdminEmail: 'admin@example.invalid', pocketbaseAdminPassword: 'test-admin-password',
+    fetchProductPage: async () => new Response('<html><head><title>Test product</title></head></html>', {
+      headers: { 'content-type': 'text/html' },
+    }),
   });
-  const input = { productId: 'malt', subject: 'A request', description: 'An idea', channel: 'Blogg' };
+  const input = {
+    productId: 'malt', productUrl: 'https://www.olbrygging.no/produkt/test',
+    subject: 'A request', description: 'An idea', channel: 'Blogg',
+  };
   assert.equal((await call('/tickets', { method: 'POST', cookie: authCookie, body: input })).status, 201);
   assert.equal(calls.at(-1).path, ticketsPath);
-  assert.deepEqual(calls.at(-1).body, input);
+  assert.deepEqual(calls.at(-1).body, {
+    ...input,
+    productSnapshot: {
+      url: input.productUrl, name: 'Test product', description: '', price: null, currency: null, image: null,
+    },
+  });
   const patch = { status: 'in_progress' };
   assert.equal((await call(`/tickets/${ticket.id}`, { method: 'PATCH', cookie: authCookie, body: patch })).status, 200);
   assert.equal(calls.at(-1).method, 'PATCH');
@@ -218,6 +229,52 @@ test('CRM mutations route directly to portal with refreshed user authorization o
   const denied = await call(`/tickets/${ticket.id}`, { method: 'PATCH', cookie: authCookie, body: patch });
   assert.equal(denied.status, 403);
   assert.equal(JSON.stringify(denied.body).includes('sensitive'), false);
+});
+
+test('PocketBase product previews validate and fetch metadata without exposing a backend token', async (t) => {
+  const { call, calls } = await fixture(t, {
+    fetchProductPage: async () => new Response('<html><head><title>Test product</title></head></html>', {
+      headers: { 'content-type': 'text/html' },
+    }),
+  });
+  const result = await call('/products/preview', {
+    method: 'POST', cookie: authCookie, body: { url: 'https://www.olbrygging.no/produkt/test' },
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.product.name, 'Test product');
+  assert.equal(calls.at(-1).path, refreshAuth);
+  assert.equal(calls.at(-1).headers.Authorization, authCookie.slice('olbrygging_pb_auth='.length));
+});
+
+test('profile, article and damage-report APIs route through user-scoped PocketBase hooks', async (t) => {
+  const { call, calls, setHandler } = await fixture(t);
+  setHandler((request) => {
+    if (request.path === '/api/portal/profile' || request.path.startsWith('/api/portal/users/')) {
+      return reply({ user });
+    }
+    if (request.path === '/api/portal/articles' && request.method === 'GET') return reply({ articles: [] });
+    if (request.path.startsWith('/api/portal/articles')) return reply({ article: { id: 'article00000001' } }, 201);
+    if (request.path === '/api/portal/damage-reports' || request.path.startsWith('/api/portal/damage-reports/')) {
+      return reply({ report: { id: 'report000000001' } }, 201);
+    }
+  });
+  const profile = await call('/profile', { method: 'PATCH', cookie: authCookie, body: { socialMedia: '@test' } });
+  assert.equal(profile.status, 200);
+  assert.equal(calls.at(-1).path, '/api/portal/profile');
+  assert.equal(calls.at(-1).headers.Authorization, refreshedToken);
+  await call(`/users/${employee.id}`, { method: 'PATCH', cookie: authCookie, body: { name: 'Updated' } });
+  assert.equal(calls.at(-1).path, `/api/portal/users/${employee.id}`);
+  assert.deepEqual((await call('/articles', { cookie: authCookie })).body, { articles: [] });
+  await call('/articles', { method: 'POST', cookie: authCookie, body: { title: 'Guide', body: 'Text', category: 'Tips' } });
+  assert.equal(calls.at(-1).path, '/api/portal/articles');
+  await call('/articles/article00000001', { method: 'PATCH', cookie: authCookie, body: { title: 'Updated' } });
+  assert.equal(calls.at(-1).path, '/api/portal/articles/article00000001');
+  await call('/damage-reports', { method: 'POST', cookie: authCookie, body: { description: 'Damaged item' } });
+  assert.equal(calls.at(-1).path, '/api/portal/damage-reports');
+  await call('/damage-reports/report000000001', { method: 'PATCH', cookie: authCookie, body: { status: 'approved' } });
+  assert.equal(calls.at(-1).path, '/api/portal/damage-reports/report000000001');
+  assert.ok(calls.filter((request) => request.path.startsWith('/api/portal/')).every((request) => request.headers.Authorization === refreshedToken));
+  assert.equal((await call('/users', { method: 'POST', cookie: authCookie, body: {} })).status, 403);
 });
 
 test('PocketBase retains same-origin, method, field, body size and ticket ID validation', async (t) => {

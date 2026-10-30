@@ -48,4 +48,29 @@ body{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-ri
   #toast{bottom:calc(80px + env(safe-area-inset-bottom))}
 }
 @media(max-width:359px){.product-grid{grid-template-columns:1fr}.demo-actions{flex-wrap:wrap}}
+.profile-card,.settings-card,.admin-create,.damage-form-card,.article-editor{max-width:760px;padding:24px;margin-bottom:24px}
+.article-list,.damage-list,.admin-users{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+.article-card,.damage-card,.admin-user{padding:22px}
+.article-card h2,.damage-card h2,.admin-user h2{margin:8px 0}
+.article-card p,.damage-card p{white-space:pre-wrap;font-size:13px;color:#66746b}
+.article-card small,.damage-card small{display:block;color:var(--muted);font-size:11px;margin:14px 0}
+.article-card .text-button{padding:0}
+.article-editor h2,.damage-form-card h2,.admin-create h2{margin-bottom:20px}
+.article-editor .modal-actions,.damage-card .modal-actions{justify-content:flex-start}
+.owner-filter{max-width:300px;margin:12px 0}
+.admin-user .pill{margin-left:8px}
+.admin-user-form{display:grid;gap:12px}
+.admin-user-form .field{margin:0}
+.settings-card form{display:grid;gap:15px}
+.settings-card .field{max-width:300px;margin:0}
+.check-label{display:flex;align-items:center;gap:9px;font-size:12px}
+.check-label input{width:auto}
+.compact .main{font-size:12px}
+.compact .card{padding-top:14px;padding-bottom:14px}
+[data-theme=dark] body{background:#18231e;color:#e2e9e2}
+[data-theme=dark] .workspace{background:#18231e}
+[data-theme=dark] .card,[data-theme=dark] .metric,[data-theme=dark] .icon-button,[data-theme=dark] .secondary,[data-theme=dark] input,[data-theme=dark] textarea,[data-theme=dark] select{background:#24332b;color:#e2e9e2;border-color:#405247}
+[data-theme=dark] .topbar{background:#1e2b24;border-color:#405247}
+[data-theme=dark] .main p,[data-theme=dark] .article-card p,[data-theme=dark] .damage-card p{color:#bac7bc}
+[data-theme=dark] .table-wrap th,[data-theme=dark] .table-wrap td{border-color:#405247}
 .product-photo{display:block;width:100%;height:100%;object-fit:cover}.product-url-row{display:flex;gap:8px}.product-url-row input{flex:1;min-width:0}.product-url-row .secondary{white-space:nowrap}.product-title-link{color:inherit;text-decoration:none}.product-title-link:hover{text-decoration:underline;color:var(--green)}.ticket-product-link{display:inline-flex;align-items:center;gap:5px;margin-top:7px;font-size:10px;color:#65804e}.ticket-product-link .icon{width:13px;height:13px}.product-preview-description{font-size:11px;color:var(--muted);line-height:1.6;margin:-12px 0 20px}
