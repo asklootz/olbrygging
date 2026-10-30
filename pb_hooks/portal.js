@@ -83,14 +83,19 @@ function messageJSON(message) {
 }
 
 function ticketJSON(app, ticket) {
-  const product = app.findRecordById("products", ticket.getString("productId"));
+  const productId = ticket.getString("productId");
+  let product = null;
+  if (productId) {
+    try { product = app.findRecordById("products", productId); } catch (_) { /* Custom-URL tasks have no catalogue relation. */ }
+  }
   const messages = app.findRecordsByFilter("messages", "ticketId = {:id}", "createdAt,id", 0, 0, { id: ticket.id });
   return {
     id: ticket.id, number: ticket.getInt("number"), subject: ticket.getString("subject"),
-    description: ticket.getString("description"), productId: product.getString("slug"),
+    description: ticket.getString("description"), productId: product ? product.getString("slug") : null,
     productUrl: ticket.getString("productUrl"), productSnapshot: ticket.get("productSnapshot") || null,
     ambassadorId: ticket.getString("ambassadorId"), assigneeId: ticket.getString("assigneeId"),
     status: ticket.getString("status"), channel: ticket.getString("channel"),
+    acceptBy: ticket.getString("acceptBy") || null,
     dueDate: ticket.getString("dueDate") || null,
     createdAt: timestamp(ticket, "createdAt"), updatedAt: timestamp(ticket, "updatedAt"),
     messages: messages.map(messageJSON),
@@ -102,7 +107,9 @@ function authorizedTicket(app, id, user) {
   try { ticket = app.findRecordById("tickets", id); } catch (_) {
     throw new NotFoundError("Fant ikke forespørselen.");
   }
-  if (user.getString("role") !== "employee" && ticket.getString("ambassadorId") !== user.id) {
+  const availableTask = ticket.getString("status") === "available" && !ticket.getString("ambassadorId")
+    && ticket.getString("acceptBy") >= new Date().toISOString().slice(0, 10);
+  if (user.getString("role") !== "employee" && ticket.getString("ambassadorId") !== user.id && !availableTask) {
     throw new NotFoundError("Fant ikke forespørselen.");
   }
   return ticket;
@@ -160,7 +167,9 @@ module.exports = {
     e.app.runInTransaction((app) => {
       const user = actor(app, e.auth.id);
       const employee = user.getString("role") === "employee";
-      const tickets = app.findRecordsByFilter("tickets", employee ? "" : "ambassadorId = {:id}", "-number", 0, 0, { id: user.id }).map((record) => ticketJSON(app, record));
+      const ticketFilter = employee ? "" : "ambassadorId = {:id} || (status = 'available' && ambassadorId = '' && acceptBy >= {:today})";
+      const tickets = app.findRecordsByFilter("tickets", ticketFilter, "-number", 0, 0,
+        { id: user.id, today: new Date().toISOString().slice(0, 10) }).map((record) => ticketJSON(app, record));
       const relevant = {};
       relevant[user.id] = true;
       for (const ticket of tickets) {
@@ -273,7 +282,7 @@ module.exports = {
       let ticketId = "";
       if (input.ticketId !== undefined && input.ticketId !== "") {
         const ticket = authorizedTicket(app, text(input.ticketId, 100), user);
-        if (!productId || ticket.getString("productId") !== productId) throw new BadRequestError("Produktet må stemme med samarbeidet.");
+        if (ticket.getString("ambassadorId") !== user.id || !productId || ticket.getString("productId") !== productId) throw new BadRequestError("Velg et av dine samarbeid med samme produkt.");
         ticketId = ticket.id;
       }
       const report = new Record(app.findCollectionByNameOrId("damage_reports"));
@@ -364,27 +373,120 @@ module.exports = {
     return e.json(201, { ticket: result });
   },
 
+  createTask(e) {
+    const input = body(e);
+    fields(input, ["productUrl", "productSnapshot", "subject", "description", "acceptBy", "dueDate"]);
+    const user = actor(e.app, e.auth.id);
+    if (user.getString("role") !== "employee") throw new ForbiddenError("Bare ansatte kan opprette åpne oppgaver.");
+    const productUrl = text(input.productUrl, 2000);
+    if (!/^https:\/\/www\.olbrygging\.no\/.+/i.test(productUrl)) throw new BadRequestError("Ugyldig produktlenke.");
+    const subject = text(input.subject, 160);
+    const description = text(input.description, 5000);
+    const acceptBy = date(input.acceptBy);
+    const dueDate = date(input.dueDate);
+    const today = new Date().toISOString().slice(0, 10);
+    if (!acceptBy || !dueDate || acceptBy < today || dueDate < acceptBy) {
+      throw new BadRequestError("Velg en frist for å melde interesse i dag eller senere, og en publiseringsfrist etter denne.");
+    }
+    const snapshot = input.productSnapshot;
+    fields(snapshot, ["url", "name", "description", "price", "currency", "image"]);
+    if (snapshot.url !== productUrl || typeof snapshot.name !== "string" || !snapshot.name.trim() || snapshot.name.length > 300
+      || typeof snapshot.description !== "string" || snapshot.description.length > 2000
+      || (snapshot.price !== null && (typeof snapshot.price !== "number" || !isFinite(snapshot.price) || snapshot.price < 0))
+      || (snapshot.currency !== null && (typeof snapshot.currency !== "string" || snapshot.currency.length > 12))
+      || (snapshot.image !== null && (typeof snapshot.image !== "string" || snapshot.image.length > 2000 || !/^https:\/\//i.test(snapshot.image)))) {
+      throw new BadRequestError("Hent produktinformasjonen fra lenken før du oppretter oppgaven.");
+    }
+    let result;
+    e.app.runInTransaction((app) => {
+      const user = actor(app, e.auth.id);
+      if (user.getString("role") !== "employee") throw new ForbiddenError("Bare ansatte kan opprette åpne oppgaver.");
+      const employees = app.findRecordsByFilter("users", "role = 'employee'", "created,id", 1, 0);
+      if (!employees.length) throw new ApiError(409, "Ingen medarbeider er tilgjengelig.");
+      const counter = app.findFirstRecordByFilter("portal_counters", "key = 'tickets'");
+      const number = counter.getInt("value") + 1;
+      counter.set("value", number);
+      app.save(counter);
+      const ticket = new Record(app.findCollectionByNameOrId("tickets"));
+      for (const [key, value] of Object.entries({
+        number, subject, description, productId: "", ambassadorId: "", assigneeId: user.id,
+        productUrl, productSnapshot: snapshot, status: "available", channel: "", acceptBy, dueDate,
+      })) ticket.set(key, value);
+      app.save(ticket);
+      result = ticketJSON(app, ticket);
+    });
+    return e.json(201, { ticket: result });
+  },
+
+  acceptTask(e) {
+    fields(body(e), []);
+    const id = e.request.pathValue("id");
+    let result;
+    e.app.runInTransaction((app) => {
+      const user = actor(app, e.auth.id);
+      if (user.getString("role") !== "ambassador") throw new ForbiddenError("Bare ambassadører kan melde interesse for oppgaver.");
+      let ticket;
+      try { ticket = app.findRecordById("tickets", id); } catch (_) {
+        throw new NotFoundError("Fant ikke oppgaven.");
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      if (ticket.getString("status") !== "available" || ticket.getString("ambassadorId")) {
+        throw new ApiError(409, "Denne oppgaven er ikke lenger tilgjengelig.");
+      }
+      if (!ticket.getString("acceptBy") || ticket.getString("acceptBy") < today) {
+        throw new ApiError(409, "Fristen for å melde interesse for denne oppgaven har gått ut.");
+      }
+      ticket.set("ambassadorId", user.id);
+      ticket.set("status", "approved");
+      app.save(ticket);
+      result = ticketJSON(app, ticket);
+    });
+    return e.json(200, { ticket: result });
+  },
+
   update(e) {
     const input = body(e);
-    fields(input, ["status", "assigneeId", "dueDate"]);
+    fields(input, ["status", "assigneeId", "dueDate", "channel"]);
     if (!Object.keys(input).length) throw new BadRequestError("Ingen endringer er oppgitt.");
     let result;
     e.app.runInTransaction((app) => {
       const user = actor(app, e.auth.id);
       const ticket = authorizedTicket(app, e.request.pathValue("id"), user);
+      if (user.getString("role") === "ambassador" && ticket.getString("ambassadorId") !== user.id) {
+        throw new NotFoundError("Meld interesse for oppgaven før du kan endre den.");
+      }
       if (user.getString("role") !== "employee") {
         const transitions = { approved: "in_progress", in_progress: "review" };
-        if (input.assigneeId !== undefined || input.dueDate !== undefined
-          || !input.status || transitions[ticket.getString("status")] !== input.status) {
-          throw new ForbiddenError("Du kan bare starte en godkjent oppgave eller sende den til vurdering.");
+        const selectingChannel = Object.keys(input).length === 1 && input.channel !== undefined
+          && ticket.getString("ambassadorId") === user.id && ["approved", "in_progress"].indexOf(ticket.getString("status")) >= 0;
+        const changingStatus = Object.keys(input).length === 1 && input.status !== undefined
+          && transitions[ticket.getString("status")] === input.status;
+        if (!selectingChannel && !changingStatus) {
+          throw new ForbiddenError("Du kan velge kanal på din oppgave, starte eller sende den til vurdering.");
         }
       }
       if (input.status !== undefined) {
-        if (["requested", "approved", "in_progress", "review", "completed", "declined"].indexOf(input.status) < 0) throw new BadRequestError("Ugyldig status.");
+        if (["available", "requested", "approved", "in_progress", "review", "completed", "declined"].indexOf(input.status) < 0) throw new BadRequestError("Ugyldig status.");
+        if (input.status === "available" && (ticket.getString("ambassadorId") || !ticket.getString("acceptBy")
+          || ticket.getString("acceptBy") < new Date().toISOString().slice(0, 10))) {
+          throw new BadRequestError("Bare en utildelt oppgave med akseptfrist kan være åpen.");
+        }
+        if (!ticket.getString("ambassadorId") && ["available", "declined"].indexOf(input.status) < 0) {
+          throw new BadRequestError("En ambassadør må akseptere oppgaven før den kan starte.");
+        }
         ticket.set("status", input.status);
       }
       if (input.assigneeId !== undefined) ticket.set("assigneeId", userWithRole(app, input.assigneeId, "employee").id);
-      if (input.dueDate !== undefined) ticket.set("dueDate", date(input.dueDate));
+      if (input.dueDate !== undefined) {
+        const dueDate = date(input.dueDate);
+        if (ticket.getString("acceptBy") && (!dueDate || dueDate < ticket.getString("acceptBy"))) throw new BadRequestError("Publiseringsfristen kan ikke være før akseptfristen.");
+        ticket.set("dueDate", dueDate);
+      }
+      if (input.channel !== undefined) {
+        if (["Instagram", "TikTok", "YouTube", "Blogg", "Annet"].indexOf(input.channel) < 0) throw new BadRequestError("Ugyldig publiseringskanal.");
+        if (user.getString("role") === "ambassador" && ticket.getString("ambassadorId") !== user.id) throw new ForbiddenError("Meld interesse for oppgaven før du velger kanal.");
+        ticket.set("channel", input.channel);
+      }
       app.save(ticket);
       result = ticketJSON(app, ticket);
     });
@@ -400,6 +502,10 @@ module.exports = {
     e.app.runInTransaction((app) => {
       const user = actor(app, e.auth.id);
       const ticket = authorizedTicket(app, e.request.pathValue("id"), user);
+      if (!ticket.getString("ambassadorId")) throw new BadRequestError("Samtalen åpnes når en ambassadør har akseptert oppgaven.");
+      if (user.getString("role") === "ambassador" && ticket.getString("ambassadorId") !== user.id) {
+        throw new NotFoundError("Meld interesse for oppgaven før du starter en samtale.");
+      }
       const message = new Record(app.findCollectionByNameOrId("messages"));
       for (const [key, value] of Object.entries({
         ticketId: ticket.id, authorId: user.id, body: messageBody,

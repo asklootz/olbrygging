@@ -7,7 +7,7 @@ import { ApiError, text, dateValue, checkFields, readBody } from './api.mjs';
 import { createPocketbaseApi } from './pocketbase.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
-const STATUSES = ['requested', 'approved', 'in_progress', 'review', 'completed', 'declined'];
+const STATUSES = ['available', 'requested', 'approved', 'in_progress', 'review', 'completed', 'declined'];
 const CHANNELS = ['Instagram', 'TikTok', 'YouTube', 'Blogg', 'Annet'];
 const COOKIE = 'olbrygging_session';
 const SESSION_MS = 1000 * 60 * 60 * 12;
@@ -290,7 +290,9 @@ export function createApp(options = {}) {
   const cookieValue = (token, age) => `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${age}${secureCookies ? '; Secure' : ''}`;
   const authorizedTicket = (id, user) => {
     const ticket = state.tickets.find((item) => item.id === id);
-    if (!ticket || (user.role === 'ambassador' && ticket.ambassadorId !== user.id)) {
+    const availableTask = ticket?.status === 'available' && !ticket.ambassadorId
+      && ticket.acceptBy >= new Date().toISOString().slice(0, 10);
+    if (!ticket || (user.role === 'ambassador' && ticket.ambassadorId !== user.id && !availableTask)) {
       throw new ApiError(404, 'Fant ikke forespørselen.');
     }
     return ticket;
@@ -312,13 +314,13 @@ export function createApp(options = {}) {
   async function api(req, res, pathname) {
     const method = req.method;
     const known = ['/api/config', '/api/session', '/api/login', '/api/logout', '/api/workspace', '/api/tickets', '/api/articles', '/api/damage-reports', '/api/profile', '/api/users'].includes(pathname)
-      || pathname === '/api/products/preview' || pathname === '/api/ambassador-applications'
-      || /^\/api\/tickets\/[a-zA-Z0-9_-]{1,100}(?:\/messages)?$/.test(pathname)
+      || pathname === '/api/products/preview' || pathname === '/api/ambassador-applications' || pathname === '/api/tasks'
+      || /^\/api\/tickets\/[a-zA-Z0-9_-]{1,100}(?:\/messages|\/accept)?$/.test(pathname)
       || /^\/api\/(articles|damage-reports|users)\/[a-zA-Z0-9_-]{1,100}$/.test(pathname);
     if (!known) throw new ApiError(404, 'Ukjent API-endepunkt.');
     const allowed = ['/api/config', '/api/session', '/api/workspace'].includes(pathname) ? ['GET']
       : pathname === '/api/articles' || pathname === '/api/users' ? ['GET', 'POST']
-        : pathname === '/api/damage-reports' || pathname === '/api/login' || pathname === '/api/logout' ? ['POST']
+        : pathname === '/api/damage-reports' || pathname === '/api/login' || pathname === '/api/logout' || pathname === '/api/tasks' || /\/accept$/.test(pathname) ? ['POST']
           : pathname === '/api/profile' || /^\/api\/tickets\/[^/]+$/.test(pathname) || /^\/api\/(articles|damage-reports|users)\/[^/]+$/.test(pathname) ? ['PATCH'] : ['POST'];
     if (!allowed.includes(method)) {
       res.setHeader('Allow', allowed.join(', '));
@@ -386,7 +388,9 @@ export function createApp(options = {}) {
       return json(res, 200, { user: null });
     }
     if (pathname === '/api/workspace') {
-      const tickets = state.tickets.filter((ticket) => user.role !== 'ambassador' || ticket.ambassadorId === user.id);
+      const today = new Date().toISOString().slice(0, 10);
+      const tickets = state.tickets.filter((ticket) => user.role !== 'ambassador' || ticket.ambassadorId === user.id
+        || ticket.status === 'available' && !ticket.ambassadorId && ticket.acceptBy >= today);
       const staff = user.role !== 'ambassador';
       const relevant = new Set([user.id, ...state.users.filter((item) => item.role === 'employee').map((item) => item.id)]);
       for (const ticket of tickets) {
@@ -417,6 +421,30 @@ export function createApp(options = {}) {
     if (pathname === '/api/products/preview') {
       checkFields(body, ['url']);
       return json(res, 200, { product: await fetchProductDetails(body.url) });
+    }
+    if (pathname === '/api/tasks') {
+      if (!['admin', 'employee'].includes(user.role)) throw new ApiError(403, 'Bare ansatte kan opprette åpne oppgaver.');
+      checkFields(body, ['productUrl', 'subject', 'description', 'acceptBy', 'dueDate']);
+      const snapshot = await fetchProductDetails(body.productUrl);
+      const subject = text(body.subject, 'Oppgavenavn', 160);
+      const description = text(body.description, 'Idé eller instruksjoner', 5000);
+      const acceptBy = dateValue(body.acceptBy);
+      const dueDate = dateValue(body.dueDate);
+      const today = new Date().toISOString().slice(0, 10);
+      if (!acceptBy || !dueDate || acceptBy < today || dueDate < acceptBy) {
+        throw new ApiError(400, 'Velg en frist for å melde interesse i dag eller senere, og en publiseringsfrist etter denne.');
+      }
+      const employeeId = user.role === 'employee' ? user.id : state.users.find((item) => item.role === 'employee')?.id;
+      if (!employeeId) throw new ApiError(409, 'Ingen medarbeider er tilgjengelig.');
+      const number = Math.max(1000, ...state.tickets.map((ticket) => ticket.number)) + 1;
+      const ticket = {
+        id: randomUUID(), number, subject, description, productId: null,
+        productUrl: snapshot.url, productSnapshot: snapshot, ambassadorId: '', assigneeId: employeeId,
+        status: 'available', channel: '', acceptBy, dueDate,
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), messages: [],
+      };
+      commit({ ...state, tickets: [...state.tickets, ticket] });
+      return json(res, 201, { ticket });
     }
     if (pathname === '/api/users') {
       if (user.role !== 'admin') throw new ApiError(403, 'Bare administratorer kan administrere brukere.');
@@ -489,7 +517,10 @@ export function createApp(options = {}) {
       const productId = body.productId === undefined ? null : text(body.productId, 'Produkt', 100);
       if (productId && !state.products.some((item) => item.id === productId)) throw new ApiError(400, 'Velg et gyldig produkt.');
       const ticketId = body.ticketId === undefined || body.ticketId === '' ? null : text(body.ticketId, 'Samarbeid', 100);
-      if (ticketId && authorizedTicket(ticketId, user).productId !== productId) throw new ApiError(400, 'Produktet må stemme med samarbeidet.');
+      if (ticketId) {
+        const relatedTicket = authorizedTicket(ticketId, user);
+        if (relatedTicket.ambassadorId !== user.id || relatedTicket.productId !== productId) throw new ApiError(400, 'Velg et av dine samarbeid med samme produkt.');
+      }
       const report = {
         id: randomUUID(), ambassadorId: user.id, productId, ticketId,
         description: text(body.description, 'Beskrivelse', 5000), status: 'pending',
@@ -511,6 +542,18 @@ export function createApp(options = {}) {
       };
       commit({ ...state, damageReports: state.damageReports.map((item) => item.id === id ? updated : item) });
       return json(res, 200, { report: updated });
+    }
+    const acceptMatch = pathname.match(/^\/api\/tickets\/([a-z0-9-]{15,36})\/accept$/i);
+    if (acceptMatch) {
+      checkFields(body, []);
+      if (user.role !== 'ambassador') throw new ApiError(403, 'Bare ambassadører kan melde interesse for oppgaver.');
+      const ticket = state.tickets.find((item) => item.id === acceptMatch[1]);
+      if (!ticket || ticket.status !== 'available' || ticket.ambassadorId) throw new ApiError(409, 'Denne oppgaven er ikke lenger tilgjengelig.');
+      const today = new Date().toISOString().slice(0, 10);
+      if (!ticket.acceptBy || ticket.acceptBy < today) throw new ApiError(409, 'Fristen for å melde interesse for denne oppgaven har gått ut.');
+      const accepted = { ...ticket, ambassadorId: user.id, status: 'approved', updatedAt: new Date().toISOString() };
+      commit({ ...state, tickets: state.tickets.map((item) => item.id === ticket.id ? accepted : item) });
+      return json(res, 200, { ticket: accepted });
     }
     if (pathname === '/api/tickets') {
       checkFields(body, ['productId', 'productUrl', 'subject', 'description', 'channel', 'dueDate', 'ambassadorId']);
@@ -543,26 +586,43 @@ export function createApp(options = {}) {
     }
     const id = pathname.split('/')[3];
     const ticket = authorizedTicket(id, user);
+    if (method !== 'PATCH' && user.role === 'ambassador' && ticket.ambassadorId !== user.id) {
+      throw new ApiError(404, 'Meld interesse for oppgaven før du starter en samtale.');
+    }
     if (method === 'PATCH') {
-      checkFields(body, ['status', 'assigneeId', 'dueDate']);
+      checkFields(body, ['status', 'assigneeId', 'dueDate', 'channel']);
       if (!Object.keys(body).length) throw new ApiError(400, 'Ingen endringer er oppgitt.');
       if (user.role === 'ambassador') {
         const transitions = { approved: 'in_progress', in_progress: 'review' };
-        if (body.assigneeId !== undefined || body.dueDate !== undefined || !body.status || transitions[ticket.status] !== body.status) {
-          throw new ApiError(403, 'Du kan bare starte en godkjent oppgave eller sende en pågående oppgave til vurdering.');
+        const selectingChannel = Object.keys(body).length === 1 && body.channel !== undefined
+          && ticket.ambassadorId === user.id && ['approved', 'in_progress'].includes(ticket.status);
+        const changingStatus = Object.keys(body).length === 1 && body.status !== undefined && transitions[ticket.status] === body.status;
+        if (!selectingChannel && !changingStatus) {
+          throw new ApiError(403, 'Du kan velge kanal på din oppgave, starte en godkjent oppgave eller sende en pågående oppgave til vurdering.');
         }
       }
       if (body.status !== undefined && !STATUSES.includes(body.status)) throw new ApiError(400, 'Ugyldig status.');
+      if (body.status === 'available' && (ticket.ambassadorId || !ticket.acceptBy || ticket.acceptBy < new Date().toISOString().slice(0, 10))) throw new ApiError(400, 'Bare en utildelt oppgave med gyldig akseptfrist kan være åpen.');
+      if (body.status !== undefined && !ticket.ambassadorId && !['available', 'declined'].includes(body.status)) throw new ApiError(400, 'En ambassadør må akseptere oppgaven først.');
       if (body.assigneeId !== undefined && !state.users.some((item) => item.id === body.assigneeId && item.role === 'employee')) {
         throw new ApiError(400, 'Ansvarlig må være en medarbeider.');
       }
       const updated = { ...ticket, updatedAt: new Date().toISOString() };
       if (body.status !== undefined) updated.status = body.status;
       if (body.assigneeId !== undefined) updated.assigneeId = body.assigneeId;
-      if (body.dueDate !== undefined) updated.dueDate = dateValue(body.dueDate);
+      if (body.dueDate !== undefined) {
+        updated.dueDate = dateValue(body.dueDate);
+        if (ticket.acceptBy && (!updated.dueDate || updated.dueDate < ticket.acceptBy)) throw new ApiError(400, 'Publiseringsfristen kan ikke være før akseptfristen.');
+      }
+      if (body.channel !== undefined) {
+        if (!CHANNELS.includes(body.channel)) throw new ApiError(400, 'Velg en gyldig publiseringskanal.');
+        if (!ticket.ambassadorId && user.role === 'ambassador') throw new ApiError(403, 'Meld interesse for oppgaven før du velger kanal.');
+        updated.channel = body.channel;
+      }
       commit({ ...state, tickets: state.tickets.map((item) => item.id === id ? updated : item) });
       return json(res, 200, { ticket: updated });
     }
+    if (!ticket.ambassadorId) throw new ApiError(400, 'Samtalen åpnes når en ambassadør har akseptert oppgaven.');
     checkFields(body, ['body', 'sendEmail']);
     const messageBody = text(body.body, 'Melding', 5000);
     if (body.sendEmail !== undefined && typeof body.sendEmail !== 'boolean') throw new ApiError(400, 'sendEmail må være true eller false.');

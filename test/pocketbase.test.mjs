@@ -96,6 +96,41 @@ test('PocketBase is the default even when no backend URL is configured', async (
   }
 });
 
+test('staff task creation fetches URL metadata server-side and never requires a catalogue, ambassador or platform', async (t) => {
+  const { call, calls, setHandler } = await fixture(t, {
+    fetchProductPage: async () => new Response(`<html><head><meta property="og:image" content="/product.jpg"><script type="application/ld+json">{"@type":"Product","name":"URL product","description":"Freshly fetched description","offers":{"price":"399.50","priceCurrency":"NOK"}}</script></head></html>`, { headers: { 'content-type': 'text/html' } }),
+  });
+  const body = { productUrl: 'https://www.olbrygging.no/produkt/new', subject: 'An idea', description: 'Staff input', acceptBy: '2028-01-01', dueDate: '2028-01-15' };
+  assert.equal((await call('/tasks', { method: 'POST', cookie: authCookie, body })).status, 403);
+  setHandler(({ path }) => path === refreshAuth ? reply({ token: refreshedToken, record: employee })
+    : path === '/api/portal/tasks' ? reply({ ticket: { ...ticket, ...body, status: 'available' } }, 201) : undefined);
+  const created = await call('/tasks', { method: 'POST', cookie: authCookie, body });
+  assert.equal(created.status, 201);
+  const request = calls.at(-1);
+  assert.equal(request.path, '/api/portal/tasks');
+  assert.equal(request.headers.Authorization, refreshedToken);
+  assert.deepEqual(request.body.productSnapshot, {
+    url: body.productUrl, name: 'URL product', description: 'Freshly fetched description', price: 399.5,
+    currency: 'NOK', image: 'https://www.olbrygging.no/product.jpg',
+  });
+  for (const key of ['productId', 'ambassadorId', 'channel']) assert.equal(request.body[key], undefined);
+  for (const changes of [{ ambassadorId: user.id }, { channel: 'Instagram' }, { productSnapshot: {} }]) {
+    assert.equal((await call('/tasks', { method: 'POST', cookie: authCookie, body: { ...body, ...changes } })).status, 400);
+  }
+});
+
+test('accept-task routes use current user authorization and reject forged input and wrong methods', async (t) => {
+  const { call, calls, setHandler } = await fixture(t);
+  const path = `/api/portal/tickets/${ticket.id}/accept`;
+  setHandler(({ path: route }) => route === path ? reply({ ticket: { ...ticket, status: 'approved' } }) : undefined);
+  const result = await call(`/tickets/${ticket.id}/accept`, { method: 'POST', cookie: authCookie, body: {} });
+  assert.equal(result.status, 200);
+  assert.equal(calls.at(-1).path, path);
+  assert.equal(calls.at(-1).headers.Authorization, refreshedToken);
+  assert.equal((await call(`/tickets/${ticket.id}/accept`, { method: 'GET', cookie: authCookie })).status, 405);
+  assert.equal((await call(`/tickets/${ticket.id}/accept`, { method: 'POST', cookie: authCookie, body: { ambassadorId: employee.id } })).status, 400);
+});
+
 test('public applications submit only to the scoped hook without auth, cookies or privileged credentials', async (t) => {
   const { call, calls, setHandler } = await fixture(t, {
     pocketbaseAdminEmail: 'admin@example.invalid', pocketbaseAdminPassword: 'test-password',

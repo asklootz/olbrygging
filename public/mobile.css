@@ -17,6 +17,16 @@
 .mobile-ticket-meta .icon { width: 16px; height: 16px; }
 .mobile-ticket-open { width: 100%; min-height: 44px; }
 .mobile-ticket-list { gap: 10px; }
+.pill.available { background: #e8eee1; color: #496c53; }
+.task-deadlines { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 18px 24px; background: #eef2e9; }
+.task-deadlines > div { min-width: 0; display: grid; gap: 5px; }
+.task-deadlines small { color: var(--muted); font-size: 11px; }
+.task-deadlines strong { font-size: 14px; }
+.task-accept-panel { padding: 20px 24px max(20px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: #fff; }
+.task-accept-panel p { margin-bottom: 12px; color: var(--muted); font-size: 13px; }
+.task-accept-panel .primary { width: 100%; min-height: 48px; }
+.task-form .product-preview-description { margin-top: 0; }
+.mobile-task-accept { width: 100%; min-height: 44px; margin-top: 9px; }
 
 @media (max-width: 980px) {
   .shell { display: block; min-height: 100dvh; }
@@ -114,6 +124,8 @@
   .application-social-grid { grid-template-columns: minmax(0, 1fr); }
   .drawer .modal-head { padding-right: max(18px, env(safe-area-inset-right)); padding-left: max(18px, env(safe-area-inset-left)); }
   .drawer-scroll { overscroll-behavior: contain; }
+  .task-deadlines { padding: 16px; }
+  .task-accept-panel { padding-right: max(16px, env(safe-area-inset-right)); padding-left: max(16px, env(safe-area-inset-left)); }
 }
 
 @media (max-width: 420px) {

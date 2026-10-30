@@ -176,6 +176,26 @@ export function createPocketbaseApi(options) {
       checkFields(input, ['url']);
       return { status: 200, body: { product: await options.readProductPage(input.url) } };
     }
+    if (pathname === '/api/tasks') {
+      if (auth.user.role !== 'employee') throw new ApiError(403, 'Bare ansatte kan opprette åpne oppgaver.');
+      const input = await readBody(req);
+      checkFields(input, ['productUrl', 'subject', 'description', 'acceptBy', 'dueDate']);
+      const productSnapshot = await options.readProductPage(input.productUrl);
+      return {
+        status: 201,
+        body: await request('/api/portal/tasks', {
+          token: auth.token, method: 'POST', body: { ...input, productUrl: productSnapshot.url, productSnapshot },
+        }),
+      };
+    }
+    const acceptMatch = pathname.match(/^\/api\/tickets\/([a-z0-9]{15})\/accept$/);
+    if (acceptMatch) {
+      checkFields(await readBody(req), []);
+      return {
+        status: 200,
+        body: await request(`/api/portal/tickets/${acceptMatch[1]}/accept`, { token: auth.token, method: 'POST', body: {} }),
+      };
+    }
     if (pathname === '/api/profile') {
       const input = await readBody(req);
       checkFields(input, ['name', 'email', 'socialMedia']);
@@ -224,7 +244,7 @@ export function createPocketbaseApi(options) {
     const ticketId = pathname.split('/')[3];
     if (!/^[a-z0-9]{15}$/.test(ticketId)) throw new ApiError(404, 'Fant ikke forespørselen.');
     if (req.method === 'PATCH') {
-      checkFields(input, ['status', 'assigneeId', 'dueDate']);
+      checkFields(input, ['status', 'assigneeId', 'dueDate', 'channel']);
       return { status: 200, body: await request(`/api/portal/tickets/${ticketId}`, { token: auth.token, method: 'PATCH', body: input }) };
     }
     checkFields(input, ['body', 'sendEmail']);

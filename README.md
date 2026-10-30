@@ -90,6 +90,19 @@ In local demo mode, the administrator account can create employee and ambassador
 
 ### Try the workflow
 
+#### Employee-created tasks
+
+1. Sign in with an **employee** account (or the local-demo administrator) and choose **Opprett oppgave** from the overview or tasks page.
+2. Paste a product-page URL from `https://www.olbrygging.no/` and select **Hent produktinfo**. The preview shows the fetched product image, name, description and price when provided by the page. A catalogue selection is not required. Creation fetches the page again on the server so a client cannot inject its own product snapshot.
+3. Keep or edit the task title, write an idea/instructions, and choose **Frist for å melde interesse** and **Publiseringsfrist**. Both dates are required; the publishing date cannot precede the acceptance date. Date-only acceptance deadlines include the entire selected UTC date.
+4. Publish without selecting an ambassador or a publishing platform. An `available` ticket stores a product snapshot, an empty ambassador relation and channel, `acceptBy`, and the publishing `dueDate`. Existing tickets and catalogue relations are preserved by the additive migration.
+5. Ambassadors see unexpired open tasks in **Mine samarbeid** and can **Aksepter oppgaven**. The first successful acceptance claims that task and changes it to `approved`; concurrent claims are resolved transactionally so another ambassador cannot take an already claimed task. This is one ambassador per task, not a bulk campaign.
+6. After acceptance, the ambassador may choose a publishing channel and continue the existing **Pågår → Til gjennomgang** workflow. Conversations become available after acceptance; other ambassadors no longer see that collaboration. Expired unaccepted tasks remain visible to employees but cannot be claimed.
+
+PocketBase uses the portal `employee` role for staff task management; PocketBase superusers administer accounts and schema in the dashboard and are not portal sign-in users.
+
+#### Ambassador-requested collaborations
+
 1. Log in as an ambassador, select a catalogue product, provide its `www.olbrygging.no` product-page URL, and submit a promotion idea. Product details are fetched from that page and linked from the ticket.
 2. Log out and log in as an employee. Open the request, select a contact person, and approve it.
 3. As the ambassador, move the approved collaboration to **Pågår**, exchange messages with the contact person, and submit it **Til gjennomgang**.

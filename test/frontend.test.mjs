@@ -84,8 +84,46 @@ test('phone layout stylesheet is linked and precached without expanding the priv
   const worker = readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8');
   assert.match(html, /href="\/mobile\.css"/);
   assert.match(worker, /'\/mobile\.css'/);
-  assert.match(worker, /olbrygging-shell-v5/);
+  assert.match(worker, /olbrygging-shell-v6/);
   assert.doesNotMatch(worker, /\/api\//);
+});
+
+test('employee task creation is URL-first with separate deadlines and no ambassador or channel picker', async () => {
+  const { context, run } = await frontend();
+  context.capture = (html) => { context.taskHtml = html; };
+  run(`state.user = { id: 'staff', name: 'Staff User', role: 'employee' };
+    showModal = capture; createTask();`);
+  const html = context.taskHtml;
+  assert.match(html, /id="task-form"/);
+  for (const name of ['productUrl', 'subject', 'description', 'acceptBy', 'dueDate']) assert.ok(html.includes(`name="${name}"`));
+  for (const name of ['productId', 'ambassadorId', 'channel']) assert.ok(!html.includes(`name="${name}"`));
+  assert.match(html, /Hent produktinfo/);
+  assert.match(html, /Idé eller instruksjoner/);
+  assert.match(run('ticketsPage()'), /data-action="create-task"/);
+  run('state.user.role = "ambassador";');
+  assert.ok(!run('ticketsPage()').includes('data-action="create-task"'));
+});
+
+test('open tasks show fetched products and both deadlines without a conversation or platform requirement', async () => {
+  const { context, run } = await frontend();
+  context.capture = (html) => { context.detailHtml = html; };
+  run(`state.user = { id: 'emil', role: 'ambassador' };
+    state.users = [{ id: 'staff', name: 'Staff Contact', role: 'employee' }];
+    state.tickets = [{ id: 'task-1', number: 1001, subject: 'Creative idea', description: 'Our input',
+      productId: null, productUrl: 'https://www.olbrygging.no/produkt/test',
+      productSnapshot: { name: 'Fetched product', description: 'Product description', image: 'https://cdn.example/product.jpg', price: 250, currency: 'NOK' },
+      ambassadorId: '', assigneeId: 'staff', status: 'available', channel: '', acceptBy: '2028-01-01', dueDate: '2028-01-14', messages: [] }];
+    showModal = capture; ticketDetail('task-1');`);
+  assert.match(context.detailHtml, /Fetched product/);
+  assert.match(context.detailHtml, /Product description/);
+  assert.match(context.detailHtml, /cdn\.example\/product\.jpg/);
+  assert.match(context.detailHtml, /250 NOK/);
+  assert.match(context.detailHtml, /Frist for å melde interesse/);
+  assert.match(context.detailHtml, /Publiseringsfrist/);
+  assert.match(context.detailHtml, /Aksepter oppgaven/);
+  assert.ok(!context.detailHtml.includes('id="message-form"'));
+  run('state.user.role = "employee"; ticketDetail("task-1");');
+  assert.ok(!context.detailHtml.includes('data-action="accept-task"'));
 });
 
 test('demo login shortcuts appear only when the server enables demo mode', async () => {
