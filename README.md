@@ -10,6 +10,7 @@ A Norwegian-language ambassador CRM for Ølbrygging AS, with PocketBase-backed a
 - PocketBase password authentication, SQLite persistence, and backend-enforced role and ticket access checks.
 - A dependency-free local demo with password authentication and JSON storage.
 - Responsive desktop/mobile layouts and keyboard-accessible dialogs.
+- Installable PWA with a cached public app shell and mobile safe-area support.
 
 ## Install and run PocketBase with npm
 
@@ -64,6 +65,16 @@ These are public **demo credentials**, not real accounts. Catalogue products, pe
 4. The employee can complete the collaboration or return it for further work.
 
 The workspace refreshes conversations periodically while open. Messages and ticket changes persist across restarts.
+
+## Install on a phone
+
+After opening the portal online, use **Install app / Add to Home screen** in Chrome on Android, or **Share → Add to Home Screen** in Safari on iPhone/iPad. Launch the home-screen icon for a standalone window.
+
+Service workers and installation require **HTTPS**, except on localhost. A phone accessing a computer's LAN HTTP address cannot install the full PWA. For a controlled mobile demo, serve through HTTPS, configure the server's `HOST` for the intended network, and set `COOKIE_SECURE=true`; do not publicly expose the demo accounts.
+
+After the first successful online visit, the public app shell is available offline. Login, products, collaborations, messages and logout still require the server. An offline reload shows a connection message and **Prøv igjen**; reconnect and retry. No API responses or private workspace data are stored in the PWA cache, and writes are not queued. Drafts stay in memory while the page remains open, but do not survive closing or reloading it. Network loss during submission can leave delivery uncertain; check the conversation before resending.
+
+Updates activate after all portal windows are closed, avoiding forced reloads while composing. When changing shell assets, bump the cache version in `public/sw.js` so the next worker installs the complete matching shell.
 
 ## Storage and configuration
 
