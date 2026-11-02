@@ -301,15 +301,24 @@ test('CRM mutations route directly to portal with refreshed user authorization o
   });
   const input = {
     productId: 'malt', productUrl: 'https://www.olbrygging.no/produkt/test',
-    subject: 'A request', description: 'An idea', channel: 'Blogg',
+    subject: 'A request', description: 'An idea', channel: 'Blogg', promotionCount: '3',
   };
   assert.equal((await call('/tickets', { method: 'POST', cookie: authCookie, body: input })).status, 201);
   assert.equal(calls.at(-1).path, ticketsPath);
   assert.deepEqual(calls.at(-1).body, {
-    ...input,
+    ...input, promotionCount: 3,
     productSnapshot: {
       url: input.productUrl, name: 'Test product', description: '', price: null, currency: null, image: null,
     },
+  });
+  const urlOnly = {
+    productUrl: 'https://www.olbrygging.no/produkt/url-only',
+    subject: 'URL-only request', description: 'An idea', channel: 'Blogg',
+  };
+  assert.equal((await call('/tickets', { method: 'POST', cookie: authCookie, body: urlOnly })).status, 201);
+  assert.equal(calls.at(-1).body.productId, undefined);
+  assert.deepEqual(calls.at(-1).body.productSnapshot, {
+    url: urlOnly.productUrl, name: 'Test product', description: '', price: null, currency: null, image: null,
   });
   const patch = { status: 'in_progress' };
   assert.equal((await call(`/tickets/${ticket.id}`, { method: 'PATCH', cookie: authCookie, body: patch })).status, 200);

@@ -90,7 +90,11 @@ function ticketJSON(app, ticket) {
   }
   const messages = app.findRecordsByFilter("messages", "ticketId = {:id}", "createdAt,id", 0, 0, { id: ticket.id });
   return {
-    id: ticket.id, number: ticket.getInt("number"), subject: ticket.getString("subject"),
+    id: ticket.id, number: ticket.getInt("number"), displayNumber: ticket.getString("displayNumber") || String(ticket.getInt("number")),
+    promotionBase: ticket.getInt("promotionBase") || ticket.getInt("number"),
+    promotionIndex: ticket.getInt("promotionIndex") || 1,
+    promotionCount: Math.max(1, ticket.getInt("promotionCount") || 1), subject: ticket.getString("subject"),
+    promotionOpen: ticket.getBool("promotionOpen"),
     description: ticket.getString("description"), productId: product ? product.getString("slug") : null,
     productUrl: ticket.getString("productUrl"), productSnapshot: ticket.get("productSnapshot") || null,
     ambassadorId: ticket.getString("ambassadorId"), assigneeId: ticket.getString("assigneeId"),
@@ -319,10 +323,14 @@ module.exports = {
 
   create(e) {
     const input = body(e);
-    fields(input, ["productId", "productUrl", "productSnapshot", "subject", "description", "channel", "dueDate", "ambassadorId"]);
+    fields(input, ["productId", "productUrl", "productSnapshot", "subject", "description", "channel", "dueDate", "ambassadorId", "promotionCount"]);
+    const promotionCount = input.promotionCount === undefined ? 1 : input.promotionCount;
+    if (typeof promotionCount !== "number" || !Number.isInteger(promotionCount) || promotionCount < 1 || promotionCount > 50) {
+      throw new BadRequestError("Antall promoteringsoppgaver må være et heltall fra 1 til 50.");
+    }
     const subject = text(input.subject, 160);
     const description = text(input.description, 5000);
-    const slug = text(input.productId, 100);
+    const slug = input.productId === undefined || input.productId === "" ? "" : text(input.productId, 100);
     const productUrl = input.productUrl === undefined ? "" : text(input.productUrl, 2000);
     let productSnapshot = null;
     if (input.productSnapshot !== undefined) {
@@ -354,28 +362,41 @@ module.exports = {
       } else if (input.ambassadorId !== undefined && input.ambassadorId !== user.id) {
         throw new ForbiddenError("Du kan bare opprette egne forespørsler.");
       }
-      const products = app.findRecordsByFilter("products", "slug = {:slug} && available = true", "", 1, 0, { slug });
-      if (!products.length) throw new BadRequestError("Velg et tilgjengelig produkt.");
+      const products = slug ? app.findRecordsByFilter("products", "slug = {:slug} && available = true", "", 1, 0, { slug }) : [];
+      if (slug && !products.length) throw new BadRequestError("Velg et tilgjengelig produkt.");
+      if (!products.length && (!productUrl || !productSnapshot)) throw new BadRequestError("Oppgi en produktlenke og hent produktinformasjonen.");
+      if (!products.length && user.getString("role") !== "ambassador") throw new BadRequestError("Ansatte må opprette åpne oppgaver via oppgaveflyten.");
       const employees = app.findRecordsByFilter("users", "role = 'employee'", "created,id", 1, 0);
       if (!employees.length) throw new ApiError(409, "Ingen medarbeider er tilgjengelig.");
       const counter = app.findFirstRecordByFilter("portal_counters", "key = 'tickets'");
-      const number = counter.getInt("value") + 1;
-      counter.set("value", number);
+      const baseNumber = counter.getInt("value") + 1;
+      counter.set("value", counter.getInt("value") + promotionCount);
       app.save(counter);
-      const ticket = new Record(app.findCollectionByNameOrId("tickets"));
-      for (const [key, value] of Object.entries({
-        number, subject, description, productId: products[0].id, ambassadorId,
-        productUrl, productSnapshot, assigneeId: employees[0].id, status: "requested", channel: input.channel, dueDate,
-      })) ticket.set(key, value);
-      app.save(ticket);
-      result = ticketJSON(app, ticket);
+      const tickets = [];
+      for (let index = 1; index <= promotionCount; index++) {
+        const ticket = new Record(app.findCollectionByNameOrId("tickets"));
+        for (const [key, value] of Object.entries({
+          number: baseNumber + index - 1, displayNumber: `${baseNumber}-${index}`,
+          promotionBase: baseNumber, promotionIndex: index, promotionCount,
+          promotionOpen: false,
+          subject, description, productId: products.length ? products[0].id : "", ambassadorId,
+          productUrl, productSnapshot, assigneeId: employees[0].id, status: "requested", channel: input.channel, dueDate,
+        })) ticket.set(key, value);
+        app.save(ticket);
+        tickets.push(ticketJSON(app, ticket));
+      }
+      result = { ticket: tickets[0], tickets, promotionCount };
     });
-    return e.json(201, { ticket: result });
+    return e.json(201, result);
   },
 
   createTask(e) {
     const input = body(e);
-    fields(input, ["productUrl", "productSnapshot", "subject", "description", "acceptBy", "dueDate"]);
+    fields(input, ["productUrl", "productSnapshot", "subject", "description", "acceptBy", "dueDate", "promotionCount"]);
+    const promotionCount = input.promotionCount === undefined ? 1 : input.promotionCount;
+    if (typeof promotionCount !== "number" || !Number.isInteger(promotionCount) || promotionCount < 1 || promotionCount > 50) {
+      throw new BadRequestError("Antall ambassadører må være et heltall fra 1 til 50.");
+    }
     const user = actor(e.app, e.auth.id);
     if (user.getString("role") !== "employee") throw new ForbiddenError("Bare ansatte kan opprette åpne oppgaver.");
     const productUrl = text(input.productUrl, 2000);
@@ -404,18 +425,25 @@ module.exports = {
       const employees = app.findRecordsByFilter("users", "role = 'employee'", "created,id", 1, 0);
       if (!employees.length) throw new ApiError(409, "Ingen medarbeider er tilgjengelig.");
       const counter = app.findFirstRecordByFilter("portal_counters", "key = 'tickets'");
-      const number = counter.getInt("value") + 1;
-      counter.set("value", number);
+      const baseNumber = counter.getInt("value") + 1;
+      counter.set("value", counter.getInt("value") + promotionCount);
       app.save(counter);
-      const ticket = new Record(app.findCollectionByNameOrId("tickets"));
-      for (const [key, value] of Object.entries({
-        number, subject, description, productId: "", ambassadorId: "", assigneeId: user.id,
-        productUrl, productSnapshot: snapshot, status: "available", channel: "", acceptBy, dueDate,
-      })) ticket.set(key, value);
-      app.save(ticket);
-      result = ticketJSON(app, ticket);
+      const tickets = [];
+      for (let index = 1; index <= promotionCount; index++) {
+        const ticket = new Record(app.findCollectionByNameOrId("tickets"));
+        for (const [key, value] of Object.entries({
+          number: baseNumber + index - 1, displayNumber: `${baseNumber}-${index}`,
+          promotionBase: baseNumber, promotionIndex: index, promotionCount,
+          promotionOpen: true,
+          subject, description, productId: "", ambassadorId: "", assigneeId: user.id,
+          productUrl, productSnapshot: snapshot, status: "available", channel: "", acceptBy, dueDate,
+        })) ticket.set(key, value);
+        app.save(ticket);
+        tickets.push(ticketJSON(app, ticket));
+      }
+      result = { ticket: tickets[0], tickets, promotionCount };
     });
-    return e.json(201, { ticket: result });
+    return e.json(201, result);
   },
 
   acceptTask(e) {
@@ -435,6 +463,12 @@ module.exports = {
       }
       if (!ticket.getString("acceptBy") || ticket.getString("acceptBy") < today) {
         throw new ApiError(409, "Fristen for å melde interesse for denne oppgaven har gått ut.");
+      }
+      const siblings = app.findRecordsByFilter("tickets",
+        "promotionOpen = true && promotionBase = {:base} && ambassadorId = {:ambassador}", "", 1, 0,
+        { base: ticket.getInt("promotionBase"), ambassador: user.id });
+      if (ticket.getBool("promotionOpen") && siblings.length) {
+        throw new ApiError(409, "Du har allerede en promoteringsoppgave fra denne forespørselen.");
       }
       ticket.set("ambassadorId", user.id);
       ticket.set("status", "approved");

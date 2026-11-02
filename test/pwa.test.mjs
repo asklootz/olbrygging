@@ -22,7 +22,7 @@ function worker() {
     },
     caches: {
       open: async () => cache,
-      keys: async () => ['olbrygging-shell-v0', 'olbrygging-shell-v2', 'olbrygging-shell-v3', 'olbrygging-shell-v4', 'olbrygging-shell-v5', 'olbrygging-shell-v6', 'unrelated-cache'],
+      keys: async () => ['olbrygging-shell-v0', 'olbrygging-shell-v2', 'olbrygging-shell-v3', 'olbrygging-shell-v4', 'olbrygging-shell-v5', 'olbrygging-shell-v6', 'olbrygging-shell-v7', 'olbrygging-shell-v8', 'olbrygging-shell-v9', 'olbrygging-shell-v10', 'olbrygging-shell-v11', 'unrelated-cache'],
       delete: async (name) => { removed.push(name); },
     },
     fetch: async (request) => { requests.push(request); return { network: true }; },
@@ -54,7 +54,7 @@ test('manifest and shell provide installable icons and never precache private da
     assert.ok(read(path === '/' ? 'index.html' : path.slice(1)).length);
   }
   await dispatch('activate');
-  assert.deepEqual(removed, ['olbrygging-shell-v0', 'olbrygging-shell-v2', 'olbrygging-shell-v3', 'olbrygging-shell-v4', 'olbrygging-shell-v5']);
+  assert.deepEqual(removed, ['olbrygging-shell-v0', 'olbrygging-shell-v2', 'olbrygging-shell-v3', 'olbrygging-shell-v4', 'olbrygging-shell-v5', 'olbrygging-shell-v6', 'olbrygging-shell-v7', 'olbrygging-shell-v8', 'olbrygging-shell-v9', 'olbrygging-shell-v10']);
   const html = read('index.html').toString();
   assert.match(html, /rel="manifest" href="\/manifest.webmanifest"/);
   assert.match(html, /rel="apple-touch-icon"/);

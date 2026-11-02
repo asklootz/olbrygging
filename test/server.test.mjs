@@ -107,6 +107,7 @@ test('ticket creation, employee approval and ambassador workflow persist across 
   assert.equal(created.status, 201);
   const { ticket } = created.body;
   assert.equal(ticket.number, 1006);
+  assert.equal(ticket.displayNumber, '1006-1');
   assert.equal(ticket.status, 'requested');
   assert.equal(ticket.assigneeId, 'nora');
   const path = `/api/tickets/${ticket.id}`;
@@ -136,6 +137,62 @@ test('ticket creation, employee approval and ambassador workflow persist across 
   assert.equal(persistedTicket.assigneeId, 'marius');
 });
 
+test('ambassador promotion quantity defaults to one and creates separately numbered ticket instances', async (t) => {
+  const { call, login } = await fixture(t);
+  const cookie = await login();
+  const input = {
+    productId: 'fjord-pale', productUrl: 'https://www.olbrygging.no/produkt/demo',
+    subject: 'Promote this product', description: 'Separate promotion drafts.', channel: 'Instagram',
+    promotionCount: '3',
+  };
+  const response = await call('/api/tickets', { method: 'POST', cookie, body: input });
+  assert.equal(response.status, 201);
+  assert.equal(response.body.promotionCount, 3);
+  assert.equal(response.body.tickets.length, 3);
+  const { ticket, tickets } = response.body;
+  assert.deepEqual(tickets.map((item) => item.displayNumber), ['1006-1', '1006-2', '1006-3']);
+  assert.deepEqual(tickets.map((item) => item.number), [1006, 1007, 1008]);
+  assert.equal(new Set(tickets.map((item) => item.id)).size, 3);
+  assert.ok(tickets.every((item) => item.promotionBase === 1006 && item.promotionCount === 3));
+  assert.ok(tickets.every((item) => item.ambassadorId === 'emil' && item.status === 'requested'));
+  assert.equal(ticket.id, tickets[0].id);
+  for (const promotionCount of [0, -1, 1.5, 51, '51', '', 'many', null, true, [], [3], {}]) {
+    assert.equal((await call('/api/tickets', { method: 'POST', cookie, body: { ...input, promotionCount } })).status, 400);
+  }
+  const staff = await login('employee@olbrygging.example');
+  assert.equal((await call(`/api/tickets/${tickets[0].id}`, { method: 'PATCH', cookie: staff, body: { status: 'approved' } })).status, 200);
+  await call(`/api/tickets/${tickets[0].id}/messages`, { method: 'POST', cookie, body: { body: 'Only instance 1' } });
+  const workspace = (await call('/api/workspace', { cookie })).body;
+  assert.equal(workspace.tickets.find((item) => item.id === tickets[0].id).status, 'approved');
+  assert.equal(workspace.tickets.find((item) => item.id === tickets[0].id).messages.length, 1);
+  assert.equal(workspace.tickets.find((item) => item.id === tickets[1].id).status, 'requested');
+  assert.deepEqual(workspace.tickets.find((item) => item.id === tickets[1].id).messages, []);
+  assert.equal(workspace.tickets.find((item) => item.number === 1001).displayNumber, undefined);
+  const next = await call('/api/tickets', { method: 'POST', cookie, body: { ...input, promotionCount: undefined } });
+  assert.equal(next.body.ticket.displayNumber, '1009-1');
+  assert.equal(next.body.tickets.length, 1);
+});
+
+test('ambassadors can submit URL-only promotion requests without a catalogue product ID', async (t) => {
+  const { call, login } = await fixture(t, {
+    fetchProductPage: async () => new Response('<html><head><meta property="og:title" content="URL-only product"></head></html>', {
+      headers: { 'content-type': 'text/html' },
+    }),
+  });
+  const cookie = await login();
+  const response = await call('/api/tickets', {
+    method: 'POST', cookie,
+    body: {
+      productUrl: 'https://www.olbrygging.no/produkt/url-only', subject: 'URL-only request',
+      description: 'A new idea', channel: 'Instagram', promotionCount: 2,
+    },
+  });
+  assert.equal(response.status, 201);
+  assert.equal(response.body.ticket.productId, null);
+  assert.equal(response.body.ticket.productSnapshot.name, 'URL-only product');
+  assert.deepEqual(response.body.tickets.map((ticket) => ticket.displayNumber), ['1006-1', '1006-2']);
+});
+
 test('employees create URL-based open tasks with separate deadlines and ambassadors claim once', async (t) => {
   const { call, login } = await fixture(t, {
     fetchProductPage: async () => new Response(`<html><head><meta property="og:image" content="/images/produkt.jpg"><script type="application/ld+json">{"@type":"Product","name":"Test product","description":"Friske råvarer","offers":{"price":"129.50","priceCurrency":"NOK"}}</script></head></html>`, {
@@ -149,10 +206,13 @@ test('employees create URL-based open tasks with separate deadlines and ambassad
   const body = {
     productUrl: 'https://www.olbrygging.no/produkt/seasonal',
     subject: 'Sesongens brygg', description: 'Del din egen idé og erfaring.',
-    acceptBy: later(5), dueDate: later(15),
+    acceptBy: later(5), dueDate: later(15), promotionCount: 3,
   };
   const created = await call('/api/tasks', { method: 'POST', cookie: staff, body });
   assert.equal(created.status, 201);
+  assert.equal(created.body.promotionCount, 3);
+  assert.deepEqual(created.body.tickets.map((ticket) => ticket.displayNumber), ['1006-1', '1006-2', '1006-3']);
+  assert.ok(created.body.tickets.every((ticket) => ticket.promotionOpen));
   assert.equal(created.body.ticket.status, 'available');
   assert.equal(created.body.ticket.productSnapshot.name, 'Test product');
   assert.equal(created.body.ticket.productSnapshot.image, 'https://www.olbrygging.no/images/produkt.jpg');
@@ -167,7 +227,8 @@ test('employees create URL-based open tasks with separate deadlines and ambassad
   for (const changes of [{ acceptBy: later(20) }, { dueDate: later(4) }, { channel: 'Instagram' }, { ambassadorId: 'sara' }]) {
     assert.equal((await call('/api/tasks', { method: 'POST', cookie: staff, body: { ...body, ...changes } })).status, 400);
   }
-  const id = created.body.ticket.id;
+  const [first, second] = created.body.tickets;
+  const id = first.id;
   const offered = (await call('/api/workspace', { cookie: ambassador })).body.tickets.find((ticket) => ticket.id === id);
   assert.ok(offered);
   assert.equal((await call(`/api/tickets/${id}/messages`, { method: 'POST', cookie: ambassador, body: { body: 'claim?' } })).status, 404);
@@ -177,6 +238,10 @@ test('employees create URL-based open tasks with separate deadlines and ambassad
   assert.equal(accepted.body.ticket.ambassadorId, 'emil');
   assert.equal(accepted.body.ticket.status, 'approved');
   assert.equal((await call(`/api/tickets/${id}/accept`, { method: 'POST', cookie: otherAmbassador, body: {} })).status, 409);
+  assert.equal((await call(`/api/tickets/${second.id}/accept`, { method: 'POST', cookie: ambassador, body: {} })).status, 409);
+  const secondAccepted = await call(`/api/tickets/${second.id}/accept`, { method: 'POST', cookie: otherAmbassador, body: {} });
+  assert.equal(secondAccepted.status, 200);
+  assert.equal(secondAccepted.body.ticket.ambassadorId, 'sara');
   assert.equal((await call(`/api/tickets/${id}`, { method: 'PATCH', cookie: ambassador, body: { channel: 'TikTok' } })).body.ticket.channel, 'TikTok');
   assert.equal((await call(`/api/tickets/${id}`, { method: 'PATCH', cookie: ambassador, body: { status: 'in_progress' } })).status, 200);
 });

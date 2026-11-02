@@ -64,13 +64,14 @@ test('workspace polling defers a render while a form has unsaved edits', async (
   assert.equal(run('state.tickets[0].id'), 'current-ticket');
 });
 
-test('mobile navigation keeps four primary destinations and exposes secondary pages in More', async () => {
+test('mobile navigation keeps primary destinations and exposes secondary pages in More', async () => {
   const { run } = await frontend();
   run(`state.user = { id: 'admin', name: 'Test Admin', role: 'admin' };
     state.products = []; state.tickets = []; state.users = []; state.articles = []; state.damageReports = [];
     showModal = html => { capturedModal = html; };`);
   const html = run('renderApp(); app.innerHTML');
-  for (const page of ['overview', 'tickets', 'products', 'messages']) assert.match(html, new RegExp(`<button data-page="${page}" (?!data-mobile-secondary)`));
+  for (const page of ['overview', 'tickets', 'messages']) assert.match(html, new RegExp(`<button data-page="${page}" (?!data-mobile-secondary)`));
+  assert.doesNotMatch(html, /data-page="products"/);
   for (const page of ['profiles', 'knowledge', 'damage', 'settings', 'admin']) assert.match(html, new RegExp(`data-page="${page}" data-mobile-secondary`));
   assert.match(html, /data-action="more-menu"/);
   run('showModal = html => { capturedModal = html; }; moreMenu();');
@@ -84,7 +85,7 @@ test('phone layout stylesheet is linked and precached without expanding the priv
   const worker = readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8');
   assert.match(html, /href="\/mobile\.css"/);
   assert.match(worker, /'\/mobile\.css'/);
-  assert.match(worker, /olbrygging-shell-v6/);
+  assert.match(worker, /olbrygging-shell-v11/);
   assert.doesNotMatch(worker, /\/api\//);
 });
 
@@ -95,13 +96,32 @@ test('employee task creation is URL-first with separate deadlines and no ambassa
     showModal = capture; createTask();`);
   const html = context.taskHtml;
   assert.match(html, /id="task-form"/);
-  for (const name of ['productUrl', 'subject', 'description', 'acceptBy', 'dueDate']) assert.ok(html.includes(`name="${name}"`));
+  for (const name of ['productUrl', 'promotionCount', 'subject', 'description', 'acceptBy', 'dueDate']) assert.ok(html.includes(`name="${name}"`));
   for (const name of ['productId', 'ambassadorId', 'channel']) assert.ok(!html.includes(`name="${name}"`));
   assert.match(html, /Hent produktinfo/);
   assert.match(html, /Idé eller instruksjoner/);
+  assert.match(html, /Hvor mange ambassadører kan promotere dette produktet\?/);
+  assert.match(html, /name="promotionCount" type="number"[^>]*value="1"/);
   assert.match(run('ticketsPage()'), /data-action="create-task"/);
   run('state.user.role = "ambassador";');
   assert.ok(!run('ticketsPage()').includes('data-action="create-task"'));
+});
+
+test('ambassador URL-based promotion requests default to one instance and cap quantity without a catalogue', async () => {
+  const { context, run } = await frontend();
+  context.capture = (html) => { context.requestHtml = html; };
+  run(`state.user = { id: 'emil', role: 'ambassador' };
+    state.products = [];
+    showModal = capture; requestPromotion();`);
+  const quantityPosition = context.requestHtml.indexOf('class="field promotion-quantity"');
+  const productUrlPosition = context.requestHtml.indexOf('name="productUrl"');
+  assert.ok(productUrlPosition >= 0 && productUrlPosition < quantityPosition);
+  assert.doesNotMatch(context.requestHtml, /name="productId"|data-product=/);
+  assert.match(context.requestHtml, /data-action="preview-product"/);
+  assert.match(context.requestHtml, /name="promotionCount" type="number"[^>]*min="1" max="50" step="1" value="1"/);
+  assert.match(context.requestHtml, /Hvor mange promoteringer ønsker du\?/);
+  assert.match(context.requestHtml, /Standard er 1/);
+  assert.match(run('ticketsPage()'), /data-action="new-promotion"/);
 });
 
 test('open tasks show fetched products and both deadlines without a conversation or platform requirement', async () => {
@@ -271,7 +291,7 @@ test('ticket rows show the validated product link and fetched product image', as
   run(`state.user = { id: 'nora', name: 'Nora Berg', role: 'employee' };
     state.users = [{ id: 'emil', name: 'Emil Hansen', role: 'ambassador' }];
     state.tickets = [{
-      id: 'ticket-1', number: 1001, subject: 'Produktguide', status: 'approved',
+      id: 'ticket-1', number: 1001, displayNumber: '1001-2', subject: 'Produktguide', status: 'approved',
       channel: 'Instagram', dueDate: null, ambassadorId: 'emil', productId: 'demo',
       productUrl: 'https://www.olbrygging.no/produkt/ekte-produkt',
       productSnapshot: { name: 'Ekte produkt', image: 'https://cdn.example/produkt.jpg', price: 129.5, currency: 'NOK', description: 'Frisk <b>råvare</b>' },
@@ -280,6 +300,7 @@ test('ticket rows show the validated product link and fetched product image', as
   assert.match(row, /href="https:\/\/www\.olbrygging\.no\/produkt\/ekte-produkt"/);
   assert.match(row, /src="https:\/\/cdn\.example\/produkt\.jpg"/);
   assert.match(row, /129,5 NOK/);
+  assert.match(row, /#1001-2/);
   assert.match(row, /Frisk &lt;b&gt;råvare&lt;\/b&gt;/);
   assert.match(row, /mobile-ticket-card/);
   assert.match(row, /Åpne samarbeid/);

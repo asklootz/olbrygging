@@ -2,8 +2,7 @@
 
 A Norwegian-language ambassador CRM for Ølbrygging AS, with PocketBase-backed and standalone local demo modes:
 
-- An illustrated, searchable product catalogue with category filters.
-- Promotion requests with a link to the olbrygging.no product and its current name, price, image, and description, plus idea, channel, and publication date.
+- URL-based promotion requests with fetched product name, price, image, and description, plus idea, channel, publication date, and optional multiple independently tracked promotion instances. Ambassador and employee pages do not include a browsable product catalogue.
 - Ambassador-specific collaboration lists and progress tracking.
 - Employee review, approval, assignment, deadlines, and completion.
 - Persistent ticket conversations, email drafts, and optional outbound email notifications.
@@ -33,7 +32,7 @@ Open the PocketBase dashboard at **http://127.0.0.1:8090/_/** and follow its fir
 npm run pocketbase -- superuser create <admin-email> <admin-password>
 ```
 
-Use your own credentials and do not commit them; command arguments may be recorded in shell history. In the dashboard's **users** collection, create at least one `employee` and one `ambassador`, each with a name, email and password. Sign into the portal using those accounts, **not** the superuser. Only superusers can provision users, change roles, or administer products. The migration seeds eight fictional products; replace them before real use.
+Use your own credentials and do not commit them; command arguments may be recorded in shell history. In the dashboard's **users** collection, create at least one `employee` and one `ambassador`, each with a name, email and password. Sign into the portal using those accounts, **not** the superuser. Only superusers can provision users, change roles, or administer product reference data. Product records remain available for damage-report links and older tickets; there is no product catalogue page in the portal.
 
 ### Import existing local users
 
@@ -84,7 +83,7 @@ Use `npm run demo` to explicitly start the standalone JSON demo. An explicitly e
 | Second employee | `marius@olbrygging.example` | `BrewTogether!2026` |
 | Administrator | `admin@olbrygging.example` | `BrewTogether!2026` |
 
-These are public **demo credentials**, not real accounts. Catalogue products, people, and conversations are fictional examples. When creating a ticket, provide a product page URL from `www.olbrygging.no` to fetch product details for the ticket; this does not make the example catalogue or ticket workflow a live commerce integration.
+These are public **demo credentials**, not real accounts. People and conversations are fictional examples. When creating a ticket, provide a product page URL from `www.olbrygging.no` to fetch product details for the ticket; this does not make the ticket workflow a live commerce integration.
 
 In local demo mode, the administrator account can create employee and ambassador accounts from **Brukeradministrasjon**. New accounts require a temporary password of at least 12 characters. PocketBase account and role administration remains restricted to superusers; the app does not send invitations or password-reset messages.
 
@@ -95,18 +94,20 @@ In local demo mode, the administrator account can create employee and ambassador
 1. Sign in with an **employee** account (or the local-demo administrator) and choose **Opprett oppgave** from the overview or tasks page.
 2. Paste a product-page URL from `https://www.olbrygging.no/` and select **Hent produktinfo**. The preview shows the fetched product image, name, description and price when provided by the page. A catalogue selection is not required. Creation fetches the page again on the server so a client cannot inject its own product snapshot.
 3. Keep or edit the task title, write an idea/instructions, and choose **Frist for å melde interesse** and **Publiseringsfrist**. Both dates are required; the publishing date cannot precede the acceptance date. Date-only acceptance deadlines include the entire selected UTC date.
-4. Publish without selecting an ambassador or a publishing platform. An `available` ticket stores a product snapshot, an empty ambassador relation and channel, `acceptBy`, and the publishing `dueDate`. Existing tickets and catalogue relations are preserved by the additive migration.
-5. Ambassadors see unexpired open tasks in **Mine samarbeid** and can **Aksepter oppgaven**. The first successful acceptance claims that task and changes it to `approved`; concurrent claims are resolved transactionally so another ambassador cannot take an already claimed task. This is one ambassador per task, not a bulk campaign.
+4. Choose how many ambassadors can promote the product (default **1**, maximum **50**), then publish without selecting any individuals or a publishing platform. The app creates that many `available` ticket instances with one shared numbered offer, an empty ambassador relation and channel, `acceptBy`, and the publishing `dueDate`. Existing tickets and catalogue relations are preserved by the additive migration.
+5. Ambassadors see unexpired offer instances in **Mine samarbeid** and can **Aksepter oppgaven**. The first successful acceptance claims one numbered instance and changes it to `approved`; concurrent claims are resolved transactionally. Each ambassador can claim at most one instance from the same offer, so a quantity of 3 can be taken by up to 3 different ambassadors.
 6. After acceptance, the ambassador may choose a publishing channel and continue the existing **Pågår → Til gjennomgang** workflow. Conversations become available after acceptance; other ambassadors no longer see that collaboration. Expired unaccepted tasks remain visible to employees but cannot be claimed.
 
 PocketBase uses the portal `employee` role for staff task management; PocketBase superusers administer accounts and schema in the dashboard and are not portal sign-in users.
 
 #### Ambassador-requested collaborations
 
-1. Log in as an ambassador, select a catalogue product, provide its `www.olbrygging.no` product-page URL, and submit a promotion idea. Product details are fetched from that page and linked from the ticket.
+1. Log in as an ambassador, choose **Send en forespørsel**, paste a `www.olbrygging.no` product-page URL, and select **Hent info**. Review the fetched details, then submit a promotion idea. Product details are fetched again by the server and linked from the ticket. No catalogue selection is required.
 2. Log out and log in as an employee. Open the request, select a contact person, and approve it.
 3. As the ambassador, move the approved collaboration to **Pågår**, exchange messages with the contact person, and submit it **Til gjennomgang**.
 4. The employee can complete the collaboration or return it for further work.
+
+When an ambassador requests a promotion, **Hvor mange promoteringer ønsker du?** defaults to **1** and accepts **1–50**. A higher value creates that many independently tracked ticket instances with the same product snapshot, idea, channel, and deadline. Each has its own status, conversation, and unique internal ticket ID/number; displayed references share the allocated base with an instance suffix (for example `1006-1`, `1006-2`, `1006-3`). Existing tickets retain their original unsuffixed numbers. All instances are assigned to the requesting ambassador and followed up separately. For employees, the same count controls how many different ambassadors can accept a URL-based offer. The database creates all instances and advances the number counter in one transaction.
 
 The workspace refreshes conversations periodically while open. Messages and ticket changes persist across restarts.
 
@@ -116,7 +117,7 @@ After opening the portal online, use **Install app / Add to Home screen** in Chr
 
 Service workers and installation require **HTTPS**, except on localhost. A phone accessing a computer's LAN HTTP address cannot install the full PWA. For a controlled mobile demo, serve through HTTPS, configure the server's `HOST` for the intended network, and set `COOKIE_SECURE=true`; do not publicly expose the demo accounts.
 
-After the first successful online visit, the public app shell is available offline. Login, products, collaborations, messages and logout still require the server. An offline reload shows a connection message and **Prøv igjen**; reconnect and retry. No API responses or private workspace data are stored in the PWA cache, and writes are not queued. Drafts stay in memory while the page remains open, but do not survive closing or reloading it. Network loss during submission can leave delivery uncertain; check the conversation before resending.
+After the first successful online visit, the public app shell is available offline. Login, product previews, collaborations, messages and logout still require the server. An offline reload shows a connection message and **Prøv igjen**; reconnect and retry. No API responses or private workspace data are stored in the PWA cache, and writes are not queued. Drafts stay in memory while the page remains open, but do not survive closing or reloading it. Network loss during submission can leave delivery uncertain; check the conversation before resending.
 
 Updates activate after all portal windows are closed, avoiding forced reloads while composing. When changing shell assets, bump the cache version in `public/sw.js` so the next worker installs the complete matching shell.
 

@@ -3,7 +3,7 @@ import { randomBytes, randomUUID, scryptSync, timingSafeEqual, createHash } from
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, realpathSync, statSync } from 'node:fs';
 import { dirname, resolve, sep, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ApiError, text, dateValue, checkFields, readBody } from './api.mjs';
+import { ApiError, text, dateValue, checkFields, promotionQuantity, readBody } from './api.mjs';
 import { createPocketbaseApi } from './pocketbase.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -424,10 +424,11 @@ export function createApp(options = {}) {
     }
     if (pathname === '/api/tasks') {
       if (!['admin', 'employee'].includes(user.role)) throw new ApiError(403, 'Bare ansatte kan opprette åpne oppgaver.');
-      checkFields(body, ['productUrl', 'subject', 'description', 'acceptBy', 'dueDate']);
+      checkFields(body, ['productUrl', 'subject', 'description', 'acceptBy', 'dueDate', 'promotionCount']);
       const snapshot = await fetchProductDetails(body.productUrl);
       const subject = text(body.subject, 'Oppgavenavn', 160);
       const description = text(body.description, 'Idé eller instruksjoner', 5000);
+      const promotionCount = promotionQuantity(body.promotionCount);
       const acceptBy = dateValue(body.acceptBy);
       const dueDate = dateValue(body.dueDate);
       const today = new Date().toISOString().slice(0, 10);
@@ -436,15 +437,18 @@ export function createApp(options = {}) {
       }
       const employeeId = user.role === 'employee' ? user.id : state.users.find((item) => item.role === 'employee')?.id;
       if (!employeeId) throw new ApiError(409, 'Ingen medarbeider er tilgjengelig.');
-      const number = Math.max(1000, ...state.tickets.map((ticket) => ticket.number)) + 1;
-      const ticket = {
-        id: randomUUID(), number, subject, description, productId: null,
+      const baseNumber = Math.max(1000, ...state.tickets.map((ticket) => ticket.number)) + 1;
+      const now = new Date().toISOString();
+      const tickets = Array.from({ length: promotionCount }, (_, index) => ({
+        id: randomUUID(), number: baseNumber + index, displayNumber: `${baseNumber}-${index + 1}`,
+        promotionBase: baseNumber, promotionIndex: index + 1, promotionCount, promotionOpen: true,
+        subject, description, productId: null,
         productUrl: snapshot.url, productSnapshot: snapshot, ambassadorId: '', assigneeId: employeeId,
         status: 'available', channel: '', acceptBy, dueDate,
-        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), messages: [],
-      };
-      commit({ ...state, tickets: [...state.tickets, ticket] });
-      return json(res, 201, { ticket });
+        createdAt: now, updatedAt: now, messages: [],
+      }));
+      commit({ ...state, tickets: [...state.tickets, ...tickets] });
+      return json(res, 201, { ticket: tickets[0], tickets, promotionCount });
     }
     if (pathname === '/api/users') {
       if (user.role !== 'admin') throw new ApiError(403, 'Bare administratorer kan administrere brukere.');
@@ -551,15 +555,19 @@ export function createApp(options = {}) {
       if (!ticket || ticket.status !== 'available' || ticket.ambassadorId) throw new ApiError(409, 'Denne oppgaven er ikke lenger tilgjengelig.');
       const today = new Date().toISOString().slice(0, 10);
       if (!ticket.acceptBy || ticket.acceptBy < today) throw new ApiError(409, 'Fristen for å melde interesse for denne oppgaven har gått ut.');
+      if (ticket.promotionOpen && state.tickets.some((item) => item.promotionOpen && item.promotionBase === ticket.promotionBase && item.ambassadorId === user.id)) {
+        throw new ApiError(409, 'Du har allerede en promoteringsoppgave fra denne forespørselen.');
+      }
       const accepted = { ...ticket, ambassadorId: user.id, status: 'approved', updatedAt: new Date().toISOString() };
       commit({ ...state, tickets: state.tickets.map((item) => item.id === ticket.id ? accepted : item) });
       return json(res, 200, { ticket: accepted });
     }
     if (pathname === '/api/tickets') {
-      checkFields(body, ['productId', 'productUrl', 'subject', 'description', 'channel', 'dueDate', 'ambassadorId']);
-      const productId = text(body.productId, 'Produkt', 100);
-      const product = state.products.find((item) => item.id === productId && item.available);
-      if (!product) throw new ApiError(400, 'Velg et tilgjengelig produkt.');
+      checkFields(body, ['productId', 'productUrl', 'subject', 'description', 'channel', 'dueDate', 'ambassadorId', 'promotionCount']);
+      const promotionCount = promotionQuantity(body.promotionCount);
+      const productId = body.productId === undefined || body.productId === '' ? null : text(body.productId, 'Produkt', 100);
+      const product = productId ? state.products.find((item) => item.id === productId && item.available) : null;
+      if (productId && !product) throw new ApiError(400, 'Velg et tilgjengelig produkt.');
       let ambassadorId = user.id;
       if (user.role !== 'ambassador') {
         ambassadorId = text(body.ambassadorId, 'Ambassadør', 100);
@@ -575,14 +583,16 @@ export function createApp(options = {}) {
       if (!assigneeId) throw new ApiError(409, 'Ingen medarbeider er tilgjengelig.');
       const productSnapshot = await fetchProductDetails(body.productUrl);
       const now = new Date().toISOString();
-      const ticket = {
-        id: randomUUID(), number: Math.max(1000, ...state.tickets.map((item) => item.number)) + 1,
+      const baseNumber = Math.max(1000, ...state.tickets.map((item) => item.number)) + 1;
+      const tickets = Array.from({ length: promotionCount }, (_, index) => ({
+        id: randomUUID(), number: baseNumber + index, displayNumber: `${baseNumber}-${index + 1}`,
+        promotionBase: baseNumber, promotionIndex: index + 1, promotionCount, promotionOpen: false,
         subject, description, productId, productUrl: productSnapshot.url, productSnapshot,
         ambassadorId, assigneeId, status: 'requested', channel: body.channel,
         dueDate, createdAt: now, updatedAt: now, messages: [],
-      };
-      commit({ ...state, tickets: [...state.tickets, ticket] });
-      return json(res, 201, { ticket });
+      }));
+      commit({ ...state, tickets: [...state.tickets, ...tickets] });
+      return json(res, 201, { ticket: tickets[0], tickets, promotionCount });
     }
     const id = pathname.split('/')[3];
     const ticket = authorizedTicket(id, user);
@@ -642,7 +652,7 @@ export function createApp(options = {}) {
             headers: { Authorization: ['Bearer', emailApiKey].join(' '), 'Content-Type': 'application/json' },
             body: JSON.stringify({
               from: emailFrom, to: [recipient.email],
-              subject: `Ølbrygging · #${ticket.number}: ${ticket.subject}`,
+              subject: `Ølbrygging · #${ticket.displayNumber || ticket.number}: ${ticket.subject}`,
               text: `${user.name} skrev:\n\n${messageBody}\n\nDette er en utgående melding fra Ølbrygging-portalen. Svar i portalen; innkommende e-post synkroniseres ikke.`,
             }),
           });

@@ -1,4 +1,4 @@
-import { ApiError, checkFields, readBody, text } from './api.mjs';
+import { ApiError, checkFields, promotionQuantity, readBody, text } from './api.mjs';
 import application from './pb_hooks/application.cjs';
 
 const AUTH_COOKIE = 'olbrygging_pb_auth';
@@ -109,7 +109,7 @@ export function createPocketbaseApi(options) {
         headers: { Authorization: ['Bearer', options.emailApiKey].join(' '), 'Content-Type': 'application/json' },
         body: JSON.stringify({
           from: options.emailFrom, to: [recipient.email],
-          subject: `Ølbrygging · #${ticket.number}: ${ticket.subject}`,
+          subject: `Ølbrygging · #${ticket.displayNumber || ticket.number}: ${ticket.subject}`,
           text: `${user.name} skrev:\n\n${message.body}\n\nDette er en utgående melding fra Ølbrygging-portalen. Svar i portalen; innkommende e-post synkroniseres ikke.`,
         }),
       });
@@ -179,7 +179,8 @@ export function createPocketbaseApi(options) {
     if (pathname === '/api/tasks') {
       if (auth.user.role !== 'employee') throw new ApiError(403, 'Bare ansatte kan opprette åpne oppgaver.');
       const input = await readBody(req);
-      checkFields(input, ['productUrl', 'subject', 'description', 'acceptBy', 'dueDate']);
+      checkFields(input, ['productUrl', 'subject', 'description', 'acceptBy', 'dueDate', 'promotionCount']);
+      input.promotionCount = promotionQuantity(input.promotionCount);
       const productSnapshot = await options.readProductPage(input.productUrl);
       return {
         status: 201,
@@ -233,7 +234,8 @@ export function createPocketbaseApi(options) {
     }
     const input = await readBody(req);
     if (pathname === '/api/tickets') {
-      checkFields(input, ['productId', 'productUrl', 'subject', 'description', 'channel', 'dueDate', 'ambassadorId']);
+      checkFields(input, ['productId', 'productUrl', 'subject', 'description', 'channel', 'dueDate', 'ambassadorId', 'promotionCount']);
+      if (input.promotionCount !== undefined) input.promotionCount = promotionQuantity(input.promotionCount);
       if (input.productUrl !== undefined) {
         const productSnapshot = await options.readProductPage(input.productUrl);
         input.productUrl = productSnapshot.url;

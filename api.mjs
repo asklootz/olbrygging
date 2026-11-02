@@ -29,6 +29,14 @@ export function checkFields(body, fields) {
   if (Object.keys(body).some((key) => !fields.includes(key))) throw new ApiError(400, 'Forespørselen inneholder ukjente felt.');
 }
 
+export function promotionQuantity(value = 1) {
+  if ((typeof value !== 'number' && !(typeof value === 'string' && /^\d{1,2}$/.test(value)))
+    || !Number.isInteger(Number(value)) || Number(value) < 1 || Number(value) > 50) {
+    throw new ApiError(400, 'Antall promoteringsoppgaver må være et heltall fra 1 til 50.');
+  }
+  return Number(value);
+}
+
 export async function readBody(req) {
   if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) {
     throw new ApiError(415, 'Bruk Content-Type: application/json.');

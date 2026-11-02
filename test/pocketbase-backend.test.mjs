@@ -201,6 +201,8 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
     await expect(200, `/api/collections/products/records/${product.id}`, { token: admin, method: 'PATCH', body: { available: true } });
     ticket = (await expect(201, '/api/portal/tickets', { token: tokens.ambassador, method: 'POST', body: draft })).ticket;
     assert.equal(ticket.number, 1001);
+    assert.equal(ticket.displayNumber, '1001-1');
+    assert.equal(ticket.promotionCount, 1);
     assert.equal(ticket.subject, 'Bryggereise');
     assert.equal(ticket.description, 'En beskrivelse');
     assert.equal(ticket.status, 'requested');
@@ -638,7 +640,7 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
     }
     const before = await expect(200, '/api/collections/users/records', { token: admin });
     await stop();
-    cli(['migrate', 'down', '5'], 'y\n');
+    cli(['migrate', 'down', '7'], 'y\n');
     cli(['migrate', 'up']);
     await start();
     const after = await expect(200, '/api/collections/users/records', { token: admin });
@@ -743,6 +745,13 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
   });
 
   await t.test('portal URL tasks survive restart, acceptance races have one winner, and expired tasks cannot be claimed', async () => {
+    const thirdAmbassador = await expect(200, '/api/collections/users/records', {
+      token: admin, method: 'POST',
+      body: { email: 'third-ambassador@example.invalid', password, passwordConfirm: password, name: 'Third ambassador', role: 'ambassador', emailVisibility: false },
+    });
+    const thirdAmbassadorToken = (await expect(200, '/api/collections/users/auth-with-password', {
+      method: 'POST', body: { identity: thirdAmbassador.email, password },
+    })).token;
     const { createApp } = await import('../server.mjs');
     const app = createApp({
       pocketbaseUrl: base,
@@ -754,7 +763,7 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
     const later = (days) => new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
     const input = {
       productUrl: 'https://www.olbrygging.no/produkt/url-task', subject: 'Creative task idea',
-      description: 'Our instructions for ambassadors', acceptBy: later(3), dueDate: later(10),
+      description: 'Our instructions for ambassadors', acceptBy: later(3), dueDate: later(10), promotionCount: 3,
     };
     const path = '/api/collections/tickets/records';
     try {
@@ -775,12 +784,20 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
         return data.ticket;
       }
       const task = await create();
+      assert.equal(task.promotionCount, 3);
+      const staffWorkspace = await expect(200, '/api/portal/workspace', { token: tokens.employee });
+      const instances = staffWorkspace.tickets.filter((item) => item.promotionBase === task.promotionBase)
+        .sort((a, b) => a.promotionIndex - b.promotionIndex);
+      assert.equal(instances.length, 3);
+      assert.deepEqual(instances.map((item) => item.displayNumber), [`${task.promotionBase}-1`, `${task.promotionBase}-2`, `${task.promotionBase}-3`]);
       assert.equal(task.productSnapshot.name, 'URL-only native product');
       assert.equal(task.productSnapshot.description, 'Native product details');
       assert.equal(task.productSnapshot.price, 950.5);
       assert.equal(task.productSnapshot.image, 'https://www.olbrygging.no/url-product.jpg');
       assert.equal(task.ambassadorId, '');
       assert.equal(task.channel, '');
+      assert.equal(task.promotionOpen, true);
+      assert.ok(instances.every((item) => item.promotionOpen && item.promotionCount === 3));
       for (const token of [tokens.employee, tokens.ambassador]) {
         await expect(400, `/api/portal/tickets/${task.id}/messages`, { token, method: 'POST', body: { body: 'Private?' } });
       }
@@ -791,6 +808,28 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
       const winner = claims.find((claim) => claim.status === 200).data.ticket.ambassadorId;
       const saved = await expect(200, `${path}/${task.id}`, { token: admin });
       assert.equal(saved.ambassadorId, winner);
+      const duplicateSlot = instances.find((item) => item.id !== task.id);
+      await expect(409, `/api/portal/tickets/${duplicateSlot.id}/accept`, {
+        token: winner === users.ambassador.id ? tokens.ambassador : tokens.other, method: 'POST', body: {},
+      });
+      const otherToken = winner === users.ambassador.id ? tokens.other : tokens.ambassador;
+      const otherClaim = await expect(200, `/api/portal/tickets/${duplicateSlot.id}/accept`, { token: otherToken, method: 'POST', body: {} });
+      assert.notEqual(otherClaim.ticket.ambassadorId, winner);
+      await expect(409, `/api/portal/tickets/${instances[2].id}/accept`, {
+        token: winner === users.ambassador.id ? tokens.ambassador : tokens.other, method: 'POST', body: {},
+      });
+      await expect(409, `/api/portal/tickets/${instances[2].id}/accept`, { token: otherToken, method: 'POST', body: {} });
+      await expect(403, `/api/portal/tickets/${instances[2].id}/accept`, { token: tokens.employee, method: 'POST', body: {} });
+      const thirdClaim = await expect(200, `/api/portal/tickets/${instances[2].id}/accept`, { token: thirdAmbassadorToken, method: 'POST', body: {} });
+      assert.notEqual(thirdClaim.ticket.ambassadorId, winner);
+      assert.notEqual(thirdClaim.ticket.ambassadorId, otherClaim.ticket.ambassadorId);
+      const raceCampaign = await create();
+      const raceSlots = (await expect(200, '/api/portal/workspace', { token: tokens.employee })).tickets
+        .filter((item) => item.promotionBase === raceCampaign.promotionBase)
+        .sort((a, b) => a.promotionIndex - b.promotionIndex);
+      const sameAmbassadorRace = await Promise.all(raceSlots.slice(0, 2).map((slot) =>
+        request(`/api/portal/tickets/${slot.id}/accept`, { token: tokens.ambassador, method: 'POST', body: {} })));
+      assert.deepEqual(sameAmbassadorRace.map((result) => result.status).sort(), [200, 409]);
       const expired = await create();
       await expect(200, `${path}/${expired.id}`, { token: admin, method: 'PATCH', body: { acceptBy: later(-1) } });
       await expect(409, `/api/portal/tickets/${expired.id}/accept`, { token: tokens.ambassador, method: 'POST', body: {} });
@@ -805,5 +844,68 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
       assert.equal(persisted.dueDate, input.dueDate);
       assert.deepEqual(persisted.productSnapshot, saved.productSnapshot);
     } finally { await new Promise((done) => app.close(done)); }
+  });
+
+  await t.test('ambassador promotion quantity creates independently numbered instances with one shared base', async () => {
+    const body = {
+      productId: 'fjord-pale', productUrl: 'https://www.olbrygging.no/produkt/multi-promotion',
+      subject: 'Promote the seasonal brew', description: 'One separate post per promotion instance.',
+      channel: 'Instagram', dueDate: '2028-04-20', promotionCount: 3,
+      productSnapshot: {
+        url: 'https://www.olbrygging.no/produkt/multi-promotion', name: 'Seasonal brew',
+        description: 'Fetched campaign product', price: 520, currency: 'NOK', image: 'https://cdn.example/seasonal.jpg',
+      },
+    };
+    const result = await expect(201, '/api/portal/tickets', { token: tokens.ambassador, method: 'POST', body });
+    assert.equal(result.promotionCount, 3);
+    assert.equal(result.tickets.length, 3);
+    assert.equal(result.ticket.id, result.tickets[0].id);
+    const base = result.ticket.number;
+    assert.deepEqual(result.tickets.map((item) => item.displayNumber), [`${base}-1`, `${base}-2`, `${base}-3`]);
+    assert.deepEqual(result.tickets.map((item) => item.number), [base, base + 1, base + 2]);
+    assert.equal(new Set(result.tickets.map((item) => item.id)).size, 3);
+    assert.ok(result.tickets.every((item) => item.promotionBase === base && item.promotionCount === 3));
+    assert.ok(result.tickets.every((item, index) => item.promotionIndex === index + 1));
+    assert.ok(result.tickets.every((item) => item.ambassadorId === users.ambassador.id && item.status === 'requested'));
+    for (const changes of [{ promotionCount: 0 }, { promotionCount: 51 }, { promotionCount: 1.5 }, { promotionCount: 'many' }]) {
+      await expect(400, '/api/portal/tickets', { token: tokens.ambassador, method: 'POST', body: { ...body, ...changes } });
+    }
+    await expect(200, `/api/portal/tickets/${result.tickets[0].id}`, {
+      token: tokens.employee, method: 'PATCH', body: { status: 'approved' },
+    });
+    await expect(201, `/api/portal/tickets/${result.tickets[0].id}/messages`, {
+      token: tokens.ambassador, method: 'POST', body: { body: 'Message for the first instance only' },
+    });
+    const workspace = await expect(200, '/api/portal/workspace', { token: tokens.ambassador });
+    assert.equal(workspace.tickets.find((item) => item.id === result.tickets[0].id).messages.length, 1);
+    assert.equal(workspace.tickets.find((item) => item.id === result.tickets[1].id).status, 'requested');
+    assert.deepEqual(workspace.tickets.find((item) => item.id === result.tickets[1].id).messages, []);
+    await expect(404, `/api/portal/tickets/${result.tickets[0].id}/messages`, {
+      token: tokens.other, method: 'POST', body: { body: 'Not my promotion' },
+    });
+    const defaultCount = await expect(201, '/api/portal/tickets', {
+      token: tokens.ambassador, method: 'POST', body: { ...body, promotionCount: undefined },
+    });
+    assert.equal(defaultCount.ticket.displayNumber, `${base + 3}-1`);
+    assert.equal(defaultCount.tickets.length, 1);
+    await expect(204, `/api/collections/tickets/records/${defaultCount.ticket.id}`, { token: admin, method: 'DELETE' });
+    for (const item of result.tickets) await expect(204, `/api/collections/tickets/records/${item.id}`, { token: admin, method: 'DELETE' });
+    const urlOnly = await expect(201, '/api/portal/tickets', {
+      token: tokens.ambassador, method: 'POST', body: {
+        productUrl: 'https://www.olbrygging.no/produkt/url-only',
+        productSnapshot: {
+          url: 'https://www.olbrygging.no/produkt/url-only', name: 'URL-only product',
+          description: 'Fetched directly from the product page.', price: 250, currency: 'NOK', image: null,
+        },
+        subject: 'URL-only promotion', description: 'No catalogue relation required.',
+        channel: 'Instagram', promotionCount: 2,
+      },
+    });
+    assert.equal(urlOnly.ticket.productId, null);
+    assert.equal(urlOnly.ticket.productSnapshot.name, 'URL-only product');
+    assert.deepEqual(urlOnly.tickets.map((item) => item.displayNumber), [
+      `${defaultCount.ticket.number + 1}-1`, `${defaultCount.ticket.number + 1}-2`,
+    ]);
+    for (const item of urlOnly.tickets) await expect(204, `/api/collections/tickets/records/${item.id}`, { token: admin, method: 'DELETE' });
   });
 });
