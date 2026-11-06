@@ -46,6 +46,18 @@ routerAdd("PATCH", "/api/portal/tickets/{id}", (e) => {
   return require(__hooks + "/portal.js").update(e);
 }, $apis.requireAuth("users"), $apis.bodyLimit(24 * 1024));
 
+routerAdd("POST", "/api/portal/tickets/{id}/submissions", (e) => {
+  return require(__hooks + "/portal.js").submitContent(e);
+}, $apis.requireAuth("users"), $apis.bodyLimit(32 * 1024 * 1024));
+
+routerAdd("PATCH", "/api/portal/tickets/{id}/publication", (e) => {
+  return require(__hooks + "/portal.js").publication(e);
+}, $apis.requireAuth("users"), $apis.bodyLimit(24 * 1024));
+
+routerAdd("POST", "/api/portal/submissions/{id}/decision", (e) => {
+  return require(__hooks + "/portal.js").reviewContent(e);
+}, $apis.requireAuth("users"), $apis.bodyLimit(24 * 1024));
+
 routerAdd("POST", "/api/portal/tickets/{id}/messages", (e) => {
   return require(__hooks + "/portal.js").message(e);
 }, $apis.requireAuth("users"), $apis.bodyLimit(24 * 1024));

@@ -126,6 +126,11 @@
   .more-menu { padding: 16px; }
   .more-menu button { min-height: 50px; }
   .application-social-grid { grid-template-columns: minmax(0, 1fr); }
+  .application-card { padding: 16px; }
+  .application-details { grid-template-columns: minmax(0, 1fr); gap: 12px; margin: 16px 0; }
+  .application-actions { align-items: stretch; flex-direction: column-reverse; }
+  .application-actions button { width: 100%; }
+  .application-invitation { align-items: stretch; flex-direction: column; }
   .drawer .modal-head { padding-right: max(18px, env(safe-area-inset-right)); padding-left: max(18px, env(safe-area-inset-left)); }
   .drawer-scroll { overscroll-behavior: contain; }
   .task-deadlines { padding: 16px; }

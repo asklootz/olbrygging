@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -351,7 +351,7 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
     }
   });
 
-  await t.test('workflow permits only approved → in_progress → review for ambassadors; employee changes are atomic', async () => {
+  await t.test('workflow routes content review through submissions and prevents unqualified closure', async () => {
     const path = `/api/portal/tickets/${ticket.id}`;
     await expect(403, path, { token: tokens.ambassador, method: 'PATCH', body: { status: 'in_progress' } });
     for (const body of [
@@ -364,17 +364,88 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
     for (const body of [{ status: 'completed' }, { dueDate: null }, { assigneeId: users.employee.id }, { status: 'in_progress', dueDate: null }]) {
       await expect(403, path, { token: tokens.ambassador, method: 'PATCH', body });
     }
-    for (const status of ['in_progress', 'review']) {
-      const changed = (await expect(200, path, { token: tokens.ambassador, method: 'PATCH', body: { status } })).ticket;
-      assert.equal(changed.status, status);
-      assert.equal(changed.dueDate, null);
-      assert.ok(Date.parse(changed.updatedAt) >= Date.parse(ticket.updatedAt));
-      assert.match(changed.updatedAt, isoTimestamp);
-    }
+    assert.equal((await expect(200, path, { token: tokens.ambassador, method: 'PATCH', body: { status: 'in_progress' } })).ticket.status, 'in_progress');
+    await expect(403, path, { token: tokens.ambassador, method: 'PATCH', body: { status: 'review' } });
     await expect(403, path, { token: tokens.ambassador, method: 'PATCH', body: { status: 'completed' } });
-    for (const status of ['completed', 'declined', 'requested', 'approved', 'in_progress', 'review']) {
+    await expect(400, path, { token: tokens.employee, method: 'PATCH', body: { status: 'review' } });
+    await expect(400, path, { token: tokens.employee, method: 'PATCH', body: { status: 'completed' } });
+    for (const status of ['declined', 'requested', 'approved', 'in_progress']) {
       assert.equal((await expect(200, path, { token: tokens.employee, method: 'PATCH', body: { status } })).ticket.status, status);
     }
+  });
+
+  await t.test('content submissions preserve versions, authorize files, audit review, and require publication before completion', async () => {
+    const path = `/api/portal/tickets/${ticket.id}/submissions`;
+    const png = readFileSync(resolve(root, 'public/icons/icon-192.png'));
+    const mp4 = Buffer.from([0, 0, 0, 16, 102, 116, 121, 112, 109, 112, 52, 49, 0, 0, 0, 0]);
+    const invalidFile = new FormData();
+    invalidFile.append('files', new Blob([png], { type: 'image/png' }), 'unsafe.html');
+    assert.equal((await fetch(`${base}${path}`, { method: 'POST', headers: { Authorization: tokens.ambassador }, body: invalidFile })).status, 400);
+    const spoofedFile = new FormData();
+    spoofedFile.append('files', new Blob(['not a PNG'], { type: 'image/png' }), 'fake.png');
+    const spoofedResponse = await fetch(`${base}${path}`, { method: 'POST', headers: { Authorization: tokens.ambassador }, body: spoofedFile });
+    assert.ok([400, 422].includes(spoofedResponse.status), `Spoofed media returned ${spoofedResponse.status}`);
+    const mismatchedFile = new FormData();
+    mismatchedFile.append('files', new Blob([png], { type: 'image/png' }), 'image.mp4');
+    assert.equal((await fetch(`${base}${path}`, { method: 'POST', headers: { Authorization: tokens.ambassador }, body: mismatchedFile })).status, 400);
+    const wrongOwner = new FormData();
+    wrongOwner.append('files', new Blob([png], { type: 'image/png' }), 'draft.png');
+    assert.equal((await fetch(`${base}${path}`, { method: 'POST', headers: { Authorization: tokens.other }, body: wrongOwner })).status, 404);
+    const upload = async (caption) => {
+      const form = new FormData();
+      form.append('caption', caption);
+      form.append('link', 'https://example.invalid/draft');
+      form.append('files', new Blob([png], { type: 'image/png' }), 'draft.png');
+      form.append('files', new Blob([mp4], { type: 'video/mp4' }), 'clip.mp4');
+      const response = await fetch(`${base}${path}`, { method: 'POST', headers: { Authorization: tokens.ambassador }, body: form });
+      const data = await response.json();
+      assert.equal(response.status, 201, `${JSON.stringify(data)}\n${logs.slice(-2500)}`);
+      return data.submission;
+    };
+    const first = await upload('Første versjon');
+    assert.equal(first.version, 1);
+    assert.equal(first.status, 'submitted');
+    assert.deepEqual(first.files.map((file) => file.type), ['image/png', 'video/mp4']);
+    await expect(409, `/api/portal/tickets/${ticket.id}`, { token: tokens.employee, method: 'PATCH', body: { status: 'in_progress' } });
+    await expect(403, `/api/portal/submissions/${first.id}/decision`, { token: tokens.ambassador, method: 'POST', body: { decision: 'approved' } });
+    await expect(403, `/api/collections/content_submissions/records/${first.id}`, { token: tokens.other, method: 'PATCH', body: { status: 'approved' } });
+    await expect(403, '/api/collections/content_submissions/records', { token: tokens.ambassador, method: 'POST', body: {} });
+    await expect(404, `/api/collections/content_submissions/records/${first.id}`, { token: tokens.other });
+    const filePath = `/api/files/content_submissions/${first.id}/${encodeURIComponent(first.files[0].name)}`;
+    assert.ok([401, 403, 404].includes((await fetch(`${base}${filePath}`)).status));
+    const otherFileToken = (await expect(200, '/api/files/token', { token: tokens.other, method: 'POST', body: {} })).token;
+    assert.ok([403, 404].includes((await fetch(`${base}${filePath}?token=${encodeURIComponent(otherFileToken)}`)).status));
+    const ownerFileToken = (await expect(200, '/api/files/token', { token: tokens.ambassador, method: 'POST', body: {} })).token;
+    const ownerFile = await fetch(`${base}${filePath}?token=${encodeURIComponent(ownerFileToken)}`);
+    assert.equal(ownerFile.status, 200);
+    assert.deepEqual(Buffer.from(await ownerFile.arrayBuffer()), png);
+    const workspace = await expect(200, '/api/portal/workspace', { token: tokens.employee });
+    const projected = workspace.tickets.find((item) => item.id === ticket.id).submissions[0];
+    assert.equal(projected.id, first.id);
+    assert.equal(JSON.stringify(projected).includes('storageKey'), false);
+    await expect(400, `/api/portal/submissions/${first.id}/decision`, { token: tokens.employee, method: 'POST', body: { decision: 'changes_requested' } });
+    const returned = await expect(200, `/api/portal/submissions/${first.id}/decision`, {
+      token: tokens.employee, method: 'POST', body: { decision: 'changes_requested', feedback: 'Juster produktmerkingen.' },
+    });
+    assert.equal(returned.submission.reviewerId, users.employee.id);
+    assert.equal(returned.submission.status, 'changes_requested');
+    await expect(409, `/api/portal/submissions/${first.id}/decision`, { token: tokens.employee, method: 'POST', body: { decision: 'approved' } });
+    const second = await upload('Revidert versjon');
+    assert.equal(second.version, 2);
+    const decisions = await Promise.all([
+      request(`/api/portal/submissions/${second.id}/decision`, { token: tokens.employee, method: 'POST', body: { decision: 'approved' } }),
+      request(`/api/portal/submissions/${second.id}/decision`, { token: tokens.employee, method: 'POST', body: { decision: 'changes_requested', feedback: 'Endre bildet.' } }),
+    ]);
+    assert.deepEqual(decisions.map((item) => item.status).sort(), [200, 409]);
+    const winner = decisions.find((item) => item.status === 200).data.submission;
+    if (winner.status === 'changes_requested') {
+      const third = await upload('Siste versjon');
+      assert.equal(third.version, 3);
+      await expect(200, `/api/portal/submissions/${third.id}/decision`, { token: tokens.employee, method: 'POST', body: { decision: 'approved' } });
+    }
+    await expect(400, `/api/portal/tickets/${ticket.id}/publication`, { token: tokens.ambassador, method: 'PATCH', body: { url: 'http://example.invalid/post' } });
+    await expect(200, `/api/portal/tickets/${ticket.id}/publication`, { token: tokens.ambassador, method: 'PATCH', body: { url: 'https://example.invalid/post' } });
+    assert.equal((await expect(200, `/api/portal/tickets/${ticket.id}`, { token: tokens.employee, method: 'PATCH', body: { status: 'completed' } })).ticket.status, 'completed');
   });
 
   await t.test('messages persist before email; actor, timestamps and delivery status cannot be forged', async () => {
@@ -472,16 +543,17 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
     await once(app, 'listening');
     const nodeBase = `http://127.0.0.1:${app.address().port}`;
     const cookies = {};
-    async function portal(path, { method = 'GET', body, role = 'ambassador', status = 200, origin = nodeBase } = {}) {
+    async function portal(path, { method = 'GET', body, form, role = 'ambassador', status = 200, origin = nodeBase } = {}) {
       const response = await fetch(`${nodeBase}/api${path}`, {
         method, signal: AbortSignal.timeout(15_000),
         headers: {
           ...(cookies[role] ? { cookie: cookies[role] } : {}),
-          ...(method === 'GET' ? {} : { Origin: origin, 'Content-Type': 'application/json' }),
+          ...(method === 'GET' ? {} : { Origin: origin, ...(form ? {} : { 'Content-Type': 'application/json' }) }),
         },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(form ? { body: form } : body === undefined ? {} : { body: JSON.stringify(body) }),
       });
-      const data = await response.json();
+      const data = response.headers.get('content-type')?.includes('application/json')
+        ? await response.json() : Buffer.from(await response.arrayBuffer());
       assert.equal(response.status, status, `Node ${method} ${path}: ${JSON.stringify(data)}`);
       if (path !== '/login' && path !== '/logout') assert.deepEqual(response.headers.getSetCookie(), []);
       const cookie = response.headers.getSetCookie().find((item) => item.startsWith('olbrygging_pb_auth='));
@@ -522,9 +594,8 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
       })).ticket;
       assert.equal(updated.status, 'approved');
       assert.equal(updated.dueDate, null);
-      for (const status of ['in_progress', 'review']) {
-        assert.equal((await portal(`/tickets/${nodeTicket.id}`, { method: 'PATCH', body: { status } })).ticket.status, status);
-      }
+      assert.equal((await portal(`/tickets/${nodeTicket.id}`, { method: 'PATCH', body: { status: 'in_progress' } })).ticket.status, 'in_progress');
+      await portal(`/tickets/${nodeTicket.id}`, { method: 'PATCH', body: { status: 'review' }, status: 403 });
       const sent = (await portal(`/tickets/${nodeTicket.id}/messages`, {
         method: 'POST', body: { body: '  Native end-to-end message  ', sendEmail: true }, status: 201,
       })).message;
@@ -543,9 +614,55 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
       assert.equal(reply.authorId, users.employee.id);
       assert.equal(reply.emailStatus, 'sent');
       assert.deepEqual(deliveries[1].to, ['ambassador@example.invalid']);
+      const png = readFileSync(resolve(root, 'public/icons/icon-192.png'));
+      const mp4 = Buffer.from([0, 0, 0, 16, 102, 116, 121, 112, 109, 112, 52, 49, 0, 0, 0, 0]);
+      const upload = async (caption) => {
+        const form = new FormData();
+        form.append('caption', caption);
+        form.append('link', 'https://example.invalid/draft');
+        form.append('files', new Blob([png], { type: 'image/png' }), 'node-draft.png');
+        form.append('files', new Blob([mp4], { type: 'video/mp4' }), 'node-clip.mp4');
+        return portal(`/tickets/${nodeTicket.id}/submissions`, { method: 'POST', form, status: 201 });
+      };
+      const first = (await upload('Node submission version one')).submission;
+      assert.equal(first.version, 1);
+      assert.equal(first.status, 'submitted');
+      assert.deepEqual(first.files.map((file) => file.type), ['image/png', 'video/mp4']);
+      await portal(`/submissions/${first.id}/decision`, { role: 'employee', method: 'POST', body: { decision: 'changes_requested', feedback: 'Legg til mer kontekst.' } });
+      const second = (await upload('Node submission version two')).submission;
+      assert.equal(second.version, 2);
+      await portal(`/submissions/${first.id}/decision`, { role: 'employee', method: 'POST', body: { decision: 'approved' }, status: 409 });
+      await portal(`/submissions/${second.id}/decision`, { role: 'employee', method: 'POST', body: { decision: 'approved' } });
+      await portal(`/tickets/${nodeTicket.id}`, { role: 'employee', method: 'PATCH', body: { status: 'completed' }, status: 400 });
+      await portal(`/tickets/${nodeTicket.id}/publication`, { method: 'PATCH', body: { url: 'https://example.invalid/published-post' } });
+      await portal(`/tickets/${nodeTicket.id}`, { role: 'employee', method: 'PATCH', body: { status: 'completed' } });
+      const mediaResponse = await fetch(`${nodeBase}/api/submissions/${first.id}/files/${encodeURIComponent(first.files[0].name)}`, {
+        headers: { cookie: cookies.ambassador },
+      });
+      assert.equal(mediaResponse.status, 200);
+      assert.match(mediaResponse.headers.get('content-type'), /image\/png/);
+      assert.deepEqual(Buffer.from(await mediaResponse.arrayBuffer()), png);
+      const videoResponse = await fetch(`${nodeBase}/api/submissions/${first.id}/files/${encodeURIComponent(first.files[1].name)}`, {
+        headers: { cookie: cookies.ambassador },
+      });
+      assert.equal(videoResponse.status, 200);
+      assert.equal(videoResponse.headers.get('content-type'), 'video/mp4');
+      assert.deepEqual(Buffer.from(await videoResponse.arrayBuffer()), mp4);
+      const videoRange = await fetch(`${nodeBase}/api/submissions/${first.id}/files/${encodeURIComponent(first.files[1].name)}`, {
+        headers: { cookie: cookies.ambassador, range: 'bytes=4-7' },
+      });
+      assert.equal(videoRange.status, 206);
+      assert.equal(videoRange.headers.get('content-range'), 'bytes 4-7/16');
+      assert.equal(Buffer.from(await videoRange.arrayBuffer()).toString(), 'ftyp');
+      const fileUrl = `${nodeBase}/api/submissions/${first.id}/files/${encodeURIComponent(first.files[0].name)}`;
+      assert.equal((await fetch(fileUrl)).status, 401);
+      await portal('/login', { role: 'other', method: 'POST', body: { email: 'other@example.invalid', password } });
+      assert.equal((await fetch(fileUrl, { headers: { cookie: cookies.other } })).status, 404);
       const saved = (await portal('/workspace')).tickets.find((item) => item.id === nodeTicket.id);
       assert.equal(saved.productId, 'fjord-pale');
-      assert.equal(saved.status, 'review');
+      assert.equal(saved.status, 'completed');
+      assert.equal(saved.publicationUrl, 'https://example.invalid/published-post');
+      assert.deepEqual(saved.submissions.map((item) => item.version), [1, 2]);
       assert.match(saved.createdAt, isoTimestamp);
       assert.match(saved.updatedAt, isoTimestamp);
       assert.deepEqual(saved.messages.map((item) => item.id), [sent.id, reply.id]);
@@ -640,13 +757,22 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
     }
     const before = await expect(200, '/api/collections/users/records', { token: admin });
     await stop();
-    cli(['migrate', 'down', '7'], 'y\n');
+    cli(['migrate', 'down', '9'], 'y\n');
     cli(['migrate', 'up']);
     await start();
+    const migratedCollections = await expect(200, '/api/collections', { token: admin });
+    for (const name of ['users', 'products', 'tickets', 'messages', 'articles', 'damage_reports', 'content_submissions']) {
+      assert.ok(migratedCollections.items.some((collection) => collection.name === name), `missing migrated collection ${name}`);
+    }
+    const migratedUsers = await expect(200, '/api/collections/users', { token: admin });
+    assert.ok(migratedUsers.fields.some((field) => field.name === 'isPortalAdmin'));
+    const migratedSubmissions = await expect(200, '/api/collections/content_submissions', { token: admin });
+    assert.ok(migratedSubmissions.fields.some((field) => field.name === 'ticketId'));
     const after = await expect(200, '/api/collections/users/records', { token: admin });
     assert.deepEqual(after.items.map((item) => item.id).sort(), before.items.map((item) => item.id).sort());
     const workspace = await expect(200, '/api/portal/workspace', { token: tokens.ambassador });
     assert.ok(workspace.tickets.some((item) => item.id === ticket.id));
+    assert.ok(workspace.tickets.find((item) => item.id === ticket.id).submissions.length >= 2);
     assert.deepEqual(workspace.articles, []);
     assert.deepEqual(workspace.damageReports, []);
     assert.equal(workspace.user.socialMedia, '');
@@ -705,21 +831,121 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
     }
     const schema = await expect(200, '/api/collections/ambassador_applications', { token: admin });
     for (const rule of ['listRule', 'viewRule', 'createRule', 'updateRule', 'deleteRule']) assert.equal(schema[rule], null);
-    // In a previous test both original employees were demoted; set one back.
-    await expect(200, `/api/collections/users/records/${users.employee.id}`, { token: admin, method: 'PATCH', body: { role: 'employee' } });
-    await expect(400, `${recordsPath}/${record.id}`, { token: admin, method: 'PATCH', body: { userId: users.employee.id } });
-    const linked = await expect(200, `${recordsPath}/${record.id}`, {
-      token: admin, method: 'PATCH', body: { userId: users.ambassador.id, status: 'approved' },
+    // In a previous test both original employees were demoted; restore one and explicitly grant review access.
+    await expect(200, `/api/collections/users/records/${users.employee.id}`, {
+      token: admin, method: 'PATCH', body: { role: 'employee', isPortalAdmin: true },
     });
-    assert.equal(linked.userId, users.ambassador.id);
-    assert.equal(linked.status, 'approved');
+    const reviewer = await expect(200, '/api/collections/users/records', {
+      token: admin, method: 'POST', body: {
+        email: 'regular-reviewer@example.invalid', password, passwordConfirm: password,
+        name: 'Regular reviewer', role: 'employee', emailVisibility: false,
+      },
+    });
+    const reviewerToken = (await expect(200, '/api/collections/users/auth-with-password', {
+      method: 'POST', body: { identity: reviewer.email, password },
+    })).token;
+    await expect(401, '/api/portal/ambassador-applications');
+    await expect(403, '/api/portal/ambassador-applications', { token: tokens.ambassador });
+    await expect(403, '/api/portal/ambassador-applications', { token: reviewerToken });
+    const privateList = await expect(200, '/api/portal/ambassador-applications', { token: tokens.employee });
+    assert.equal(privateList.applications.length, 1);
+    assert.match(privateList.applications[0].createdAt, isoTimestamp);
+    assert.equal(privateList.applications[0].addressLine1, body.addressLine1);
+    assert.deepEqual(privateList.applications[0].socialLinks, body.socialLinks);
+    await expect(400, `${recordsPath}/${record.id}`, { token: admin, method: 'PATCH', body: { userId: users.employee.id } });
+
+    const setupToken = randomBytes(32).toString('hex');
+    const setupTokenHash = createHash('sha256').update(setupToken).digest('hex');
+    const ambassadorPassword = randomBytes(24).toString('hex');
+    const setupTokenExpiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
+    const decisionPath = `/api/portal/ambassador-applications/${record.id}/decision`;
+    await expect(400, decisionPath, {
+      token: tokens.employee, method: 'POST', body: {
+        decision: 'approved', setupTokenHash, setupTokenExpiresAt: new Date(Date.now() - 1000).toISOString(),
+        temporaryPassword: randomBytes(32).toString('base64url'),
+      },
+    });
+    await expect(403, decisionPath, {
+      token: tokens.ambassador, method: 'POST', body: {
+        decision: 'declined',
+      },
+    });
+    const approved = await expect(200, decisionPath, {
+      token: tokens.employee, method: 'POST', body: {
+        decision: 'approved', setupTokenHash, setupTokenExpiresAt,
+        temporaryPassword: randomBytes(32).toString('base64url'),
+      },
+    });
+    assert.equal(approved.application.status, 'approved');
+    assert.equal(approved.application.invitationStatus, 'pending');
+    assert.ok(approved.application.userId);
+    assert.ok(approved.application.reviewerId);
+    await expect(409, decisionPath, {
+      token: tokens.employee, method: 'POST', body: {
+        decision: 'approved', setupTokenHash, setupTokenExpiresAt,
+        temporaryPassword: randomBytes(32).toString('base64url'),
+      },
+    });
+    const createdAmbassador = await expect(200, `/api/collections/users/records/${approved.application.userId}`, { token: admin });
+    assert.equal(createdAmbassador.email, body.email.toLowerCase());
+    assert.equal(createdAmbassador.role, 'ambassador');
+    assert.equal(createdAmbassador.isPortalAdmin, false);
+    assert.equal((await expect(200, '/api/collections/users/records', { token: admin })).totalItems, before.totalItems + 2);
+    await expect(200, `${recordsPath}/${record.id}`, {
+      token: admin, method: 'PATCH', body: { setupTokenExpiresAt: new Date(Date.now() - 1000).toISOString() },
+    });
+    await expect(400, '/api/portal/ambassador-account/setup', {
+      method: 'POST', body: { setupTokenHash, password: ambassadorPassword },
+    });
+    await expect(200, `${recordsPath}/${record.id}`, {
+      token: admin, method: 'PATCH', body: { setupTokenExpiresAt },
+    });
+    await expect(200, `/api/portal/ambassador-applications/${record.id}/invitation-status`, {
+      token: tokens.employee, method: 'POST', body: { status: 'failed', setupTokenHash },
+    });
+    const retryToken = randomBytes(32).toString('hex');
+    const retryTokenHash = createHash('sha256').update(retryToken).digest('hex');
+    const retried = await expect(200, decisionPath, {
+      token: tokens.employee, method: 'POST', body: {
+        decision: 'retry_invitation', setupTokenHash: retryTokenHash,
+        setupTokenExpiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
+        temporaryPassword: randomBytes(32).toString('base64url'),
+      },
+    });
+    assert.equal(retried.application.userId, approved.application.userId);
+    assert.equal(retried.application.invitationStatus, 'pending');
+    await expect(400, '/api/portal/ambassador-account/setup', {
+      method: 'POST', body: { setupTokenHash, password: ambassadorPassword },
+    });
+    await expect(200, '/api/portal/ambassador-account/setup', {
+      method: 'POST', body: { setupTokenHash: retryTokenHash, password: ambassadorPassword },
+    });
+    await expect(400, '/api/portal/ambassador-account/setup', {
+      method: 'POST', body: { setupTokenHash: retryTokenHash, password: ambassadorPassword },
+    });
+    assert.equal((await expect(200, '/api/collections/users/auth-with-password', {
+      method: 'POST', body: { identity: body.email.toLowerCase(), password: ambassadorPassword },
+    })).record.role, 'ambassador');
+    const acceptedApplication = await expect(200, `${recordsPath}/${record.id}`, { token: admin });
+    assert.equal(acceptedApplication.invitationStatus, 'accepted');
+    assert.equal(acceptedApplication.setupTokenHash, '');
+    await expect(400, `/api/collections/users/records/${approved.application.userId}`, {
+      token: admin, method: 'PATCH', body: { isPortalAdmin: true },
+    });
     const workspace = await expect(200, '/api/portal/workspace', { token: tokens.ambassador });
     assert.equal(workspace.ambassadorApplications, undefined);
     assert.ok(!JSON.stringify(workspace).includes('Testveien 12'));
 
     // Exercise the real anonymous Node route as used by the sign-in form.
     const { createApp } = await import('../server.mjs');
-    const app = createApp({ pocketbaseUrl: base });
+    const sentInvitations = [];
+    const app = createApp({
+      pocketbaseUrl: base, publicUrl: 'https://portal.example.invalid', emailApiKey: 'integration-key', emailFrom: 'portal@example.invalid',
+      fetchEmail: async (_url, options) => {
+        sentInvitations.push(JSON.parse(options.body));
+        return new Response(null, { status: 202 });
+      },
+    });
     app.listen(0, '127.0.0.1');
     await once(app, 'listening');
     const origin = `http://127.0.0.1:${app.address().port}`;
@@ -736,12 +962,74 @@ test('PocketBase 0.40.6 migrations, authorization and transactional portal endpo
       assert.equal(response.status, 201);
       assert.deepEqual(await response.json(), { submitted: true });
       assert.deepEqual(response.headers.getSetCookie(), []);
+      const newApplicant = await fetch(`${origin}/api/ambassador-applications`, {
+        method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...body, email: 'node-applicant@example.invalid' }),
+      });
+      assert.equal(newApplicant.status, 201);
+      const nodeRecord = (await expect(200, recordsPath, { token: admin })).items.find((item) => item.email === 'node-applicant@example.invalid');
+      const adminLogin = await fetch(`${origin}/api/login`, {
+        method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'employee@example.invalid', password }),
+      });
+      assert.equal(adminLogin.status, 200);
+      assert.equal((await adminLogin.json()).user.isPortalAdmin, true);
+      const adminCookie = adminLogin.headers.getSetCookie()[0].split(';')[0];
+      const adminWorkspace = await fetch(`${origin}/api/workspace`, { headers: { cookie: adminCookie } });
+      assert.equal((await adminWorkspace.json()).user.isPortalAdmin, true);
+      const decision = await fetch(`${origin}/api/ambassador-applications/${nodeRecord.id}/decision`, {
+        method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', cookie: adminCookie },
+        body: JSON.stringify({ decision: 'approved' }),
+      });
+      assert.equal(decision.status, 200);
+      assert.equal((await decision.json()).application.invitationStatus, 'sent');
+      assert.equal(sentInvitations.length, 1);
+      assert.deepEqual(sentInvitations[0].to, ['node-applicant@example.invalid']);
+      const invitationLink = sentInvitations[0].text.match(/https:\/\/portal\.example\.invalid\/#setup=[a-f0-9]{64}/)[0];
+      const setupToken = new URLSearchParams(new URL(invitationLink).hash.slice(1)).get('setup');
+      const newPassword = randomBytes(24).toString('hex');
+      const setup = await fetch(`${origin}/api/ambassador-account/setup`, {
+        method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: setupToken, password: newPassword }),
+      });
+      assert.equal(setup.status, 200);
+      const newLogin = await fetch(`${origin}/api/login`, {
+        method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'node-applicant@example.invalid', password: newPassword }),
+      });
+      assert.equal(newLogin.status, 200);
+      assert.equal((await newLogin.json()).user.role, 'ambassador');
     } finally { await new Promise((done) => app.close(done)); }
     const saved = await expect(200, recordsPath, { token: admin });
-    assert.equal(saved.totalItems, 2);
+    assert.equal(saved.totalItems, 3);
+    const raceApplication = saved.items.find((item) => item.email === 'second-applicant@example.invalid');
+    const racePath = `/api/portal/ambassador-applications/${raceApplication.id}/decision`;
+    const racingDecision = () => ({
+      decision: 'approved', setupTokenHash: createHash('sha256').update(randomBytes(32)).digest('hex'),
+      setupTokenExpiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
+      temporaryPassword: randomBytes(32).toString('base64url'),
+    });
+    const raceResults = await Promise.all([0, 1].map(() => request(racePath, {
+      token: tokens.employee, method: 'POST', body: racingDecision(),
+    })));
+    assert.deepEqual(raceResults.map((result) => result.status).sort(), [200, 409]);
+    assert.ok(raceResults.find((result) => result.status === 200).data.application.userId);
+    await expect(201, path, { method: 'POST', body: { ...body, email: 'declined@example.invalid' } });
+    const declinedRecord = (await expect(200, recordsPath, { token: admin })).items.find((item) => item.email === 'declined@example.invalid');
+    const declined = await expect(200, `/api/portal/ambassador-applications/${declinedRecord.id}/decision`, {
+      token: tokens.employee, method: 'POST', body: { decision: 'declined' },
+    });
+    assert.equal(declined.application.status, 'declined');
+    assert.equal(declined.application.userId, null);
+    await expect(201, path, { method: 'POST', body: { ...body, email: 'EMPLOYEE@example.invalid' } });
+    const duplicateRecord = (await expect(200, recordsPath, { token: admin })).items.find((item) => item.email === 'employee@example.invalid');
+    await expect(409, `/api/portal/ambassador-applications/${duplicateRecord.id}/decision`, {
+      token: tokens.employee, method: 'POST', body: racingDecision(),
+    });
+    assert.equal((await expect(200, '/api/collections/users/records', { token: admin })).totalItems, before.totalItems + 4);
     await stop();
     await start();
-    assert.equal((await expect(200, recordsPath, { token: admin })).totalItems, 2);
+    assert.equal((await expect(200, recordsPath, { token: admin })).totalItems, 5);
   });
 
   await t.test('portal URL tasks survive restart, acceptance races have one winner, and expired tasks cannot be claimed', async () => {

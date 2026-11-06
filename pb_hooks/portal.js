@@ -12,6 +12,33 @@ function text(value, max) {
   return value.trim();
 }
 
+function secureUrl(value) {
+  const match = /^https:\/\/([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::([0-9]{1,5}))?(?:[/?#][^\s]*)?$/i.exec(value);
+  if (!match || !match[1].includes(".") || match[1].includes("..")) return "";
+  if (match[2] && (Number(match[2]) < 1 || Number(match[2]) > 65535)) return "";
+  return value;
+}
+
+function mediaExtension(file) {
+  let reader;
+  let bytes;
+  try {
+    reader = file.reader.open();
+    bytes = toBytes(reader, 12);
+  } catch (_) {
+    throw new BadRequestError("Kunne ikke lese mediefilen.");
+  } finally {
+    if (reader) reader.close();
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "jpg";
+  if (bytes.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((value, index) => bytes[index] === value)) return "png";
+  if (bytes.length >= 12 && [82, 73, 70, 70].every((value, index) => bytes[index] === value)
+    && [87, 69, 66, 80].every((value, index) => bytes[index + 8] === value)) return "webp";
+  if (bytes.length >= 12 && [102, 116, 121, 112].every((value, index) => bytes[index + 4] === value)) return "mp4";
+  if (bytes.length >= 4 && [0x1a, 0x45, 0xdf, 0xa3].every((value, index) => bytes[index] === value)) return "webm";
+  return "";
+}
+
 function date(value) {
   if (value === null || value === "") return "";
   if (typeof value !== "string" || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(value)
@@ -82,6 +109,22 @@ function messageJSON(message) {
   };
 }
 
+function submissionJSON(submission) {
+  const files = submission.getStringSlice("files");
+  return {
+    id: submission.id, version: submission.getInt("version"),
+    caption: submission.getString("caption"), link: submission.getString("link"),
+    status: submission.getString("status"), submittedBy: submission.getString("submittedBy"),
+    createdAt: timestamp(submission, "createdAt"), reviewerId: submission.getString("reviewerId") || null,
+    feedback: submission.getString("feedback"), decidedAt: submission.getString("decidedAt") || null,
+    files: files.map((name) => {
+      const extension = name.slice(name.lastIndexOf(".") + 1).toLowerCase();
+      const type = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", mp4: "video/mp4", webm: "video/webm" }[extension] || "application/octet-stream";
+      return { name, type };
+    }),
+  };
+}
+
 function ticketJSON(app, ticket) {
   const productId = ticket.getString("productId");
   let product = null;
@@ -89,6 +132,7 @@ function ticketJSON(app, ticket) {
     try { product = app.findRecordById("products", productId); } catch (_) { /* Custom-URL tasks have no catalogue relation. */ }
   }
   const messages = app.findRecordsByFilter("messages", "ticketId = {:id}", "createdAt,id", 0, 0, { id: ticket.id });
+  const submissions = app.findRecordsByFilter("content_submissions", "ticketId = {:id}", "version", 0, 0, { id: ticket.id });
   return {
     id: ticket.id, number: ticket.getInt("number"), displayNumber: ticket.getString("displayNumber") || String(ticket.getInt("number")),
     promotionBase: ticket.getInt("promotionBase") || ticket.getInt("number"),
@@ -101,8 +145,9 @@ function ticketJSON(app, ticket) {
     status: ticket.getString("status"), channel: ticket.getString("channel"),
     acceptBy: ticket.getString("acceptBy") || null,
     dueDate: ticket.getString("dueDate") || null,
+    publicationUrl: ticket.getString("publicationUrl") || null,
     createdAt: timestamp(ticket, "createdAt"), updatedAt: timestamp(ticket, "updatedAt"),
-    messages: messages.map(messageJSON),
+    messages: messages.map(messageJSON), submissions: submissions.map(submissionJSON),
   };
 }
 
@@ -182,7 +227,7 @@ module.exports = {
         for (const message of ticket.messages) relevant[message.authorId] = true;
       }
       result = {
-        user: safeUser(user),
+        user: { ...safeUser(user), ...(user.getBool("isPortalAdmin") ? { isPortalAdmin: true } : {}) },
         users: app.findRecordsByFilter("users", "", "name,id", 0, 0)
           .filter((record) => employee || record.getString("role") === "employee" || relevant[record.id])
           .map(safeUser),
@@ -490,17 +535,27 @@ module.exports = {
         throw new NotFoundError("Meld interesse for oppgaven før du kan endre den.");
       }
       if (user.getString("role") !== "employee") {
-        const transitions = { approved: "in_progress", in_progress: "review" };
+        const transitions = { approved: "in_progress" };
         const selectingChannel = Object.keys(input).length === 1 && input.channel !== undefined
           && ticket.getString("ambassadorId") === user.id && ["approved", "in_progress"].indexOf(ticket.getString("status")) >= 0;
         const changingStatus = Object.keys(input).length === 1 && input.status !== undefined
           && transitions[ticket.getString("status")] === input.status;
         if (!selectingChannel && !changingStatus) {
-          throw new ForbiddenError("Du kan velge kanal på din oppgave, starte eller sende den til vurdering.");
+          throw new ForbiddenError("Du kan velge kanal eller starte en godkjent oppgave. Send innhold i innsendingsfeltet for vurdering.");
         }
       }
       if (input.status !== undefined) {
         if (["available", "requested", "approved", "in_progress", "review", "completed", "declined"].indexOf(input.status) < 0) throw new BadRequestError("Ugyldig status.");
+        if (input.status === "review") throw new BadRequestError("Send innholdet gjennom innsendingsfeltet for vurdering.");
+        const latest = app.findRecordsByFilter("content_submissions", "ticketId = {:id}", "-version", 1, 0, { id: ticket.id })[0];
+        if (latest && latest.getString("status") === "submitted" && input.status !== ticket.getString("status")) {
+          throw new ApiError(409, "Vurder innholdet før du endrer status på oppgaven.");
+        }
+        if (input.status === "completed") {
+          if (!latest || latest.getString("status") !== "approved" || !ticket.getString("publicationUrl")) {
+            throw new BadRequestError("Oppgaven kan lukkes først når innholdet er godkjent og lenken til publiseringen er registrert.");
+          }
+        }
         if (input.status === "available" && (ticket.getString("ambassadorId") || !ticket.getString("acceptBy")
           || ticket.getString("acceptBy") < new Date().toISOString().slice(0, 10))) {
           throw new BadRequestError("Bare en utildelt oppgave med akseptfrist kan være åpen.");
@@ -525,6 +580,111 @@ module.exports = {
       result = ticketJSON(app, ticket);
     });
     return e.json(200, { ticket: result });
+  },
+
+  submitContent(e) {
+    const input = e.requestInfo().body;
+    fields(input, ["caption", "link"]);
+    const caption = input.caption === undefined || input.caption === "" ? "" : text(input.caption, 1500);
+    let link = "";
+    if (input.link !== undefined && input.link !== "") {
+      link = text(input.link, 2000);
+      link = secureUrl(link);
+      if (!link) throw new BadRequestError("Oppgi en gyldig HTTPS-lenke.");
+    }
+    const files = e.findUploadedFiles("files");
+    if (!files.length || files.length > 5) throw new BadRequestError("Velg mellom 1 og 5 bilder eller videoer.");
+    let totalSize = 0;
+    for (const file of files) {
+      if (file.size) totalSize += file.size;
+      if (file.size > 20 * 1024 * 1024 || totalSize > 30 * 1024 * 1024) {
+        throw new BadRequestError("Hver fil kan være opptil 20 MB og samlet opplasting opptil 30 MB.");
+      }
+      const match = /\.(jpe?g|png|webp|mp4|webm)$/i.exec(file.originalName);
+      const extension = match && match[1].toLowerCase() === "jpeg" ? "jpg" : match && match[1].toLowerCase();
+      if (!extension || extension !== mediaExtension(file)) {
+        throw new BadRequestError("Filtypen må samsvare med et JPEG-, PNG- eller WebP-bilde eller en MP4- eller WebM-video.");
+      }
+    }
+    let result;
+    e.app.runInTransaction((app) => {
+      const user = actor(app, e.auth.id);
+      if (user.getString("role") !== "ambassador") throw new ForbiddenError("Bare ambassadører kan sende innhold til vurdering.");
+      const ticket = authorizedTicket(app, e.request.pathValue("id"), user);
+      if (ticket.getString("ambassadorId") !== user.id) throw new NotFoundError("Fant ikke forespørselen.");
+      const previous = app.findRecordsByFilter("content_submissions", "ticketId = {:id}", "-version", 1, 0, { id: ticket.id })[0];
+      if (previous && previous.getString("status") !== "changes_requested") {
+        throw new ApiError(409, "Vent på tilbakemelding før du sender inn en ny versjon.");
+      }
+      if (ticket.getString("status") !== "in_progress") throw new BadRequestError("Oppgaven må være pågående før du kan sende inn innhold.");
+      const submission = new Record(app.findCollectionByNameOrId("content_submissions"));
+      submission.set("ticketId", ticket.id);
+      submission.set("submittedBy", user.id);
+      submission.set("version", previous ? previous.getInt("version") + 1 : 1);
+      submission.set("caption", caption);
+      submission.set("link", link);
+      submission.set("files", files);
+      submission.set("status", "submitted");
+      submission.set("createdAt", new Date().toISOString());
+      app.save(submission);
+      ticket.set("status", "review");
+      app.save(ticket);
+      result = submissionJSON(submission);
+    });
+    return e.json(201, { submission: result });
+  },
+
+  reviewContent(e) {
+    const input = body(e);
+    fields(input, ["decision", "feedback"]);
+    if (["approved", "changes_requested"].indexOf(input.decision) < 0) throw new BadRequestError("Velg godkjenning eller be om endringer.");
+    let feedback = "";
+    if (input.feedback !== undefined && input.feedback !== "") feedback = text(input.feedback, 2000);
+    if (input.decision === "changes_requested" && !feedback) throw new BadRequestError("Skriv en tilbakemelding før du ber om endringer.");
+    let result;
+    e.app.runInTransaction((app) => {
+      const user = actor(app, e.auth.id);
+      if (user.getString("role") !== "employee") throw new ForbiddenError("Bare ansatte kan vurdere innhold.");
+      let submission;
+      try { submission = app.findRecordById("content_submissions", e.request.pathValue("id")); } catch (_) {
+        throw new NotFoundError("Fant ikke innsendt innhold.");
+      }
+      const ticket = authorizedTicket(app, submission.getString("ticketId"), user);
+      const latest = app.findRecordsByFilter("content_submissions", "ticketId = {:id}", "-version", 1, 0, { id: ticket.id })[0];
+      if (!latest || latest.id !== submission.id || submission.getString("status") !== "submitted" || ticket.getString("status") !== "review") {
+        throw new ApiError(409, "Denne innholdsversjonen er ikke lenger til vurdering.");
+      }
+      submission.set("status", input.decision);
+      submission.set("reviewerId", user.id);
+      submission.set("feedback", feedback);
+      submission.set("decidedAt", new Date().toISOString());
+      app.save(submission);
+      ticket.set("status", "in_progress");
+      app.save(ticket);
+      result = submissionJSON(submission);
+    });
+    return e.json(200, { submission: result });
+  },
+
+  publication(e) {
+    const input = body(e);
+    fields(input, ["url"]);
+    const value = text(input.url, 2000);
+    const url = secureUrl(value);
+    if (!url) throw new BadRequestError("Publiseringslenken må bruke HTTPS.");
+    e.app.runInTransaction((app) => {
+      const user = actor(app, e.auth.id);
+      if (user.getString("role") !== "ambassador") throw new ForbiddenError("Bare ambassadøren kan registrere lenken til innlegget.");
+      const ticket = authorizedTicket(app, e.request.pathValue("id"), user);
+      const latest = app.findRecordsByFilter("content_submissions", "ticketId = {:id}", "-version", 1, 0, { id: ticket.id })[0];
+      if (ticket.getString("ambassadorId") !== user.id || ticket.getString("status") !== "in_progress"
+        || !latest || latest.getString("status") !== "approved") {
+        throw new BadRequestError("Registrer publiseringslenken etter at innholdet er godkjent.");
+      }
+      ticket.set("publicationUrl", url);
+      app.save(ticket);
+    });
+    return e.json(200, { ticket: {} });
   },
 
   message(e) {

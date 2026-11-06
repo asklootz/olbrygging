@@ -148,9 +148,99 @@ test('public applications submit only to the scoped hook without auth, cookies o
   assert.deepEqual(calls[0].body.socialLinks, applicationBody.socialLinks);
 });
 
+test('application review is admin-only, provisions one account and sends a hashed-token setup link', async (t) => {
+  const applicationId = 'applicant000001';
+  const application = {
+    id: applicationId, name: 'New ambassador', email: 'new@example.invalid', status: 'approved',
+    invitationStatus: 'pending', socialLinks: { instagram: 'https://instagram.com/example' },
+  };
+  let sendEmail = true;
+  let delivered;
+  const { call, calls, setHandler } = await fixture(t, {
+    publicUrl: 'https://portal.example.invalid/', emailApiKey: 'test-key', emailFrom: 'portal@example.invalid',
+    fetchEmail: async (_url, request) => {
+      delivered = JSON.parse(request.body);
+      return new Response(null, { status: sendEmail ? 202 : 503 });
+    },
+  });
+  setHandler(({ path, body }) => {
+    if (path === refreshAuth) return reply({ token: refreshedToken, record: { ...employee, isPortalAdmin: true } });
+    if (path === '/api/portal/ambassador-applications') return reply({ applications: [application] });
+    if (path === `/api/portal/ambassador-applications/${applicationId}/decision`) {
+      assert.ok(['approved', 'retry_invitation'].includes(body.decision));
+      assert.match(body.setupTokenHash, /^[a-f0-9]{64}$/);
+      assert.ok(body.setupTokenExpiresAt);
+      assert.ok(body.temporaryPassword.length >= 32);
+      return reply({ application });
+    }
+    if (path === `/api/portal/ambassador-applications/${applicationId}/invitation-status`) return reply({});
+    return undefined;
+  });
+  assert.equal((await call('/ambassador-applications', { cookie: authCookie })).status, 200);
+  const approved = await call(`/ambassador-applications/${applicationId}/decision`, {
+    method: 'POST', cookie: authCookie, body: { decision: 'approved' },
+  });
+  assert.equal(approved.status, 200);
+  assert.equal(approved.body.application.invitationStatus, 'sent');
+  const decision = calls.find((request) => request.path.endsWith('/decision'));
+  const delivery = calls.find((request) => request.path.endsWith('/invitation-status'));
+  const invitationUrl = new URL(delivered.text.match(/https:\/\/portal\.example\.invalid\/#setup=([a-f0-9]{64})/)[0]);
+  const setupToken = new URLSearchParams(invitationUrl.hash.slice(1)).get('setup');
+  const { createHash } = await import('node:crypto');
+  assert.equal(decision.body.setupTokenHash, createHash('sha256').update(setupToken).digest('hex'));
+  assert.equal(delivery.body.setupTokenHash, decision.body.setupTokenHash);
+  assert.equal(delivery.body.status, 'sent');
+  assert.equal(delivered.to[0], application.email);
+  assert.equal(delivered.text.includes(decision.body.temporaryPassword), false);
+  assert.equal(JSON.stringify(approved.body).includes(setupToken), false);
+
+  sendEmail = false;
+  const retry = await call(`/ambassador-applications/${applicationId}/retry-invitation`, {
+    method: 'POST', cookie: authCookie, body: {},
+  });
+  assert.equal(retry.status, 200);
+  assert.equal(retry.body.application.invitationStatus, 'failed');
+  const decisions = calls.filter((request) => request.path.endsWith('/decision'));
+  assert.notEqual(decisions[0].body.setupTokenHash, decisions[1].body.setupTokenHash);
+  assert.equal(calls.at(-1).body.status, 'failed');
+});
+
+test('ambassador password setup hashes the invitation token and requires a valid password', async (t) => {
+  const { call, calls, setHandler } = await fixture(t);
+  const rawToken = 'a'.repeat(64);
+  const password = 'a secure password 123';
+  setHandler(({ path, body }) => path === '/api/portal/ambassador-account/setup'
+    ? reply({ completed: true }) : undefined);
+  const invalid = await call('/ambassador-account/setup', { method: 'POST', body: { token: rawToken, password: 'short' } });
+  assert.equal(invalid.status, 400);
+  assert.equal(calls.length, 0);
+  const completed = await call('/ambassador-account/setup', { method: 'POST', body: { token: rawToken, password } });
+  assert.equal(completed.status, 200);
+  assert.deepEqual(completed.body, { completed: true });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].path, '/api/portal/ambassador-account/setup');
+  assert.notEqual(calls[0].body.setupTokenHash, rawToken);
+  assert.equal(calls[0].body.password, password);
+});
+
+test('application decision conflicts give actionable feedback without exposing provider errors', async (t) => {
+  const { call, setHandler } = await fixture(t);
+  setHandler(({ path }) => {
+    if (path === refreshAuth) return reply({ token: refreshedToken, record: { ...employee, isPortalAdmin: true } });
+    if (path.endsWith('/decision')) return reply({ message: 'private upstream detail' }, 409);
+    return undefined;
+  });
+  const response = await call('/ambassador-applications/applicant000001/decision', {
+    method: 'POST', cookie: authCookie, body: { decision: 'approved' },
+  });
+  assert.equal(response.status, 409);
+  assert.match(response.body.error, /allerede behandlet|eksisterende konto/);
+  assert.doesNotMatch(response.body.error, /private upstream detail/);
+});
+
 test('application endpoint enforces methods, same origin and validation before reaching PocketBase', async (t) => {
   const { call, calls } = await fixture(t);
-  assert.equal((await call('/ambassador-applications')).status, 405);
+  assert.equal((await call('/ambassador-applications')).status, 401);
   assert.equal((await call('/ambassador-applications', { method: 'PATCH', body: applicationBody })).status, 405);
   assert.equal((await call('/ambassador-applications', { method: 'POST', body: applicationBody, headers: { origin: 'https://other.invalid' } })).status, 403);
   for (const changes of [{ termsAccepted: false }, { socialLinks: {} }, { status: 'approved' }, { userId: user.id }, { postalCode: '' }]) {

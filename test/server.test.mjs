@@ -96,8 +96,8 @@ test('authentication, safe workspace data, strict cookies and logout', async (t)
   assert.deepEqual((await call('/api/session', { cookie })).body, { user: null });
 });
 
-test('ticket creation, employee approval and ambassador workflow persist across restart', async (t) => {
-  const { call, login, dataFile, publicDir } = await fixture(t);
+test('ticket content versions, review decisions and publication links gate closure and persist across restart', async (t) => {
+  const { call, login, dataFile, publicDir, base } = await fixture(t);
   const cookie = await login();
   const staff = await login('employee@olbrygging.example');
   const created = await call('/api/tickets', {
@@ -118,14 +118,55 @@ test('ticket creation, employee approval and ambassador workflow persist across 
   assert.equal(approved.body.ticket.assigneeId, 'marius');
   assert.equal(approved.body.ticket.dueDate, '2026-11-04');
   assert.equal((await call(path, { method: 'PATCH', cookie, body: { status: 'in_progress' } })).status, 200);
-  assert.equal((await call(path, { method: 'PATCH', cookie, body: { status: 'review' } })).status, 200);
+  assert.equal((await call(path, { method: 'PATCH', cookie, body: { status: 'review' } })).status, 403);
+  assert.equal((await call(path, { method: 'PATCH', cookie: staff, body: { status: 'completed' } })).status, 400);
   assert.equal((await call(path, { method: 'PATCH', cookie, body: { status: 'completed' } })).status, 403);
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
+  const send = async (who, caption) => {
+    const form = new FormData();
+    form.append('caption', caption);
+    form.append('link', 'https://example.invalid/draft');
+    form.append('files', new Blob([png], { type: 'image/png' }), 'post draft.png');
+    const response = await fetch(`${base}${path}/submissions`, { method: 'POST', headers: { origin: base, cookie: who }, body: form });
+    return { status: response.status, body: await response.json() };
+  };
+  assert.equal((await send(cookie, 'first version')).status, 201);
+  const first = (await call('/api/workspace', { cookie: staff })).body.tickets.find((item) => item.id === ticket.id).submissions[0];
+  assert.equal(first.version, 1);
+  assert.equal(first.status, 'submitted');
+  assert.equal(JSON.stringify(first).includes('storageKey'), false);
+  assert.equal((await send(cookie, 'duplicate')).status, 409);
+  assert.equal((await call(path, { method: 'PATCH', cookie: staff, body: { status: 'in_progress' } })).status, 409);
+  const fileUrl = `${base}/api/submissions/${first.id}/files/${encodeURIComponent(first.files[0].name)}`;
+  assert.equal((await fetch(fileUrl)).status, 401);
+  const unauthorizedFile = await fetch(fileUrl, { headers: { cookie: await login('sara@olbrygging.example') } });
+  assert.equal(unauthorizedFile.status, 404);
+  const preview = await fetch(fileUrl, { headers: { cookie: staff } });
+  assert.equal(preview.status, 200);
+  assert.match(preview.headers.get('content-type'), /image\/png/);
+  assert.deepEqual(Buffer.from(await preview.arrayBuffer()), png);
+  assert.equal((await call(`/api/submissions/${first.id}/decision`, { method: 'POST', cookie: staff, body: { decision: 'changes_requested' } })).status, 400);
+  const returned = await call(`/api/submissions/${first.id}/decision`, { method: 'POST', cookie: staff, body: { decision: 'changes_requested', feedback: 'Flytt teksten bort fra produktet.' } });
+  assert.equal(returned.status, 200);
+  assert.equal(returned.body.submission.reviewerId, 'nora');
+  assert.equal((await call(`/api/submissions/${first.id}/decision`, { method: 'POST', cookie: staff, body: { decision: 'approved' } })).status, 409);
+  const secondSubmission = await send(cookie, 'revised version');
+  assert.equal(secondSubmission.status, 201);
+  assert.equal(secondSubmission.body.submission.version, 2);
+  assert.equal((await call(`/api/submissions/${first.id}/decision`, { method: 'POST', cookie: staff, body: { decision: 'approved' } })).status, 409);
+  const reviews = await Promise.all([1, 2].map(() => call(`/api/submissions/${secondSubmission.body.submission.id}/decision`, {
+    method: 'POST', cookie: staff, body: { decision: 'approved', feedback: 'Godkjent.' },
+  })));
+  assert.deepEqual(reviews.map((review) => review.status).sort(), [200, 409]);
+  assert.equal((await call(path, { method: 'PATCH', cookie: staff, body: { status: 'completed' } })).status, 400);
+  assert.equal((await call(`/api/tickets/${ticket.id}/publication`, { method: 'PATCH', cookie, body: { url: 'http://example.invalid/post' } })).status, 400);
+  assert.equal((await call(`/api/tickets/${ticket.id}/publication`, { method: 'PATCH', cookie, body: { url: 'https://example.invalid/post/123' } })).status, 200);
   assert.equal((await call(path, { method: 'PATCH', cookie: staff, body: { status: 'completed' } })).status, 200);
-  const second = createApp({ dataFile, publicDir, pocketbaseUrl: '' });
-  second.listen(0, '127.0.0.1');
-  await once(second, 'listening');
-  t.after(() => new Promise((done) => second.close(done)));
-  const origin = `http://127.0.0.1:${second.address().port}`;
+  const secondApp = createApp({ dataFile, publicDir, pocketbaseUrl: '' });
+  secondApp.listen(0, '127.0.0.1');
+  await once(secondApp, 'listening');
+  t.after(() => new Promise((done) => secondApp.close(done)));
+  const origin = `http://127.0.0.1:${secondApp.address().port}`;
   const session = await fetch(`${origin}/api/login`, {
     method: 'POST', headers: { origin, 'content-type': 'application/json' },
     body: JSON.stringify({ email: 'ambassador@olbrygging.example', password: 'BrewTogether!2026' }),
@@ -135,6 +176,57 @@ test('ticket creation, employee approval and ambassador workflow persist across 
   const persistedTicket = (await result.json()).tickets.find((item) => item.id === ticket.id);
   assert.equal(persistedTicket.status, 'completed');
   assert.equal(persistedTicket.assigneeId, 'marius');
+  assert.equal(persistedTicket.publicationUrl, 'https://example.invalid/post/123');
+  assert.deepEqual(persistedTicket.submissions.map((item) => item.version), [1, 2]);
+});
+
+test('content uploads enforce ownership, media types, counts, limits and safe file names', async (t) => {
+  const { base, login } = await fixture(t);
+  const ambassador = await login();
+  const other = await login('sara@olbrygging.example');
+  const staff = await login('employee@olbrygging.example');
+  const png = readFileSync(new URL('../public/icons/icon-192.png', import.meta.url));
+  const image = () => new Blob([png], { type: 'image/png' });
+  const submit = async (cookie, files, link = '') => {
+    const form = new FormData();
+    form.append('link', link);
+    for (const [blob, name] of files) form.append('files', blob, name);
+    const response = await fetch(`${base}/api/tickets/ticket-1001/submissions`, {
+      method: 'POST', headers: { origin: base, ...(cookie ? { cookie } : {}) }, body: form,
+    });
+    return { status: response.status, body: await response.json() };
+  };
+  assert.equal((await submit(null, [[image(), 'test.png']])).status, 401);
+  assert.equal((await submit(other, [[image(), 'test.png']])).status, 404);
+  assert.equal((await submit(staff, [[image(), 'test.png']])).status, 403);
+  assert.equal((await submit(ambassador, [])).status, 400);
+  assert.equal((await submit(ambassador, [[new Blob(['not an image'], { type: 'image/png' }), 'fake.png']])).status, 400);
+  assert.equal((await submit(ambassador, Array.from({ length: 6 }, () => [image(), 'test.png']))).status, 400);
+  assert.equal((await submit(ambassador, [[new Blob([new Uint8Array(20 * 1024 * 1024 + 1)], { type: 'image/png' }), 'large.png']])).status, 413);
+  assert.equal((await submit(ambassador, [[image(), 'test.png']], 'javascript:alert(1)')).status, 400);
+  const video = new Blob([Buffer.from([0, 0, 0, 16, 102, 116, 121, 112, 105, 115, 111, 109, 0, 0, 0, 0])], { type: 'video/mp4' });
+  const accepted = await submit(ambassador, [[image(), 'same.png'], [image(), 'same.png'], [image(), 'wrong.mp4'], [video, 'video.mp4']]);
+  assert.equal(accepted.status, 201);
+  assert.equal(new Set(accepted.body.submission.files.map((file) => file.name)).size, 4);
+  assert.deepEqual(accepted.body.submission.files.map((file) => file.type), ['image/png', 'image/png', 'image/png', 'video/mp4']);
+  assert.equal(accepted.body.submission.files[2].displayName, 'wrong.png');
+  const preview = await fetch(`${base}/api/submissions/${accepted.body.submission.id}/files/${accepted.body.submission.files[3].name}`, { headers: { cookie: ambassador } });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.headers.get('content-type'), 'video/mp4');
+  assert.equal(preview.headers.get('cache-control'), 'private, no-store');
+  assert.equal(preview.headers.get('x-content-type-options'), 'nosniff');
+  const videoUrl = `${base}/api/submissions/${accepted.body.submission.id}/files/${accepted.body.submission.files[3].name}`;
+  const partial = await fetch(videoUrl, { headers: { cookie: ambassador, range: 'bytes=4-7' } });
+  assert.equal(partial.status, 206);
+  assert.equal(partial.headers.get('content-range'), 'bytes 4-7/16');
+  assert.equal(Buffer.from(await partial.arrayBuffer()).toString(), 'ftyp');
+  const suffix = await fetch(videoUrl, { headers: { cookie: ambassador, range: 'bytes=-4' } });
+  assert.equal(suffix.status, 206);
+  assert.equal(suffix.headers.get('content-range'), 'bytes 12-15/16');
+  assert.equal((await suffix.arrayBuffer()).byteLength, 4);
+  const invalidRange = await fetch(videoUrl, { headers: { cookie: ambassador, range: 'bytes=100-' } });
+  assert.equal(invalidRange.status, 416);
+  assert.equal(invalidRange.headers.get('content-range'), 'bytes */16');
 });
 
 test('ambassador promotion quantity defaults to one and creates separately numbered ticket instances', async (t) => {

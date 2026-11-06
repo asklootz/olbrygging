@@ -1,11 +1,14 @@
-import { ApiError, checkFields, promotionQuantity, readBody, text } from './api.mjs';
+import { createHash, randomBytes } from 'node:crypto';
+import { ApiError, checkFields, promotionQuantity, readBody, readMultipart, text, validateSubmission } from './api.mjs';
 import application from './pb_hooks/application.cjs';
 
 const AUTH_COOKIE = 'olbrygging_pb_auth';
 const MAX_COOKIE_AGE = 60 * 60 * 12;
-const safeUser = ({ id, name, email, role }) => ({ id, name, email, role });
-const safeWorkspaceUser = ({ id, name, email, role, socialMedia }) => ({
-  ...safeUser({ id, name, email, role }), active: true, socialMedia: socialMedia || '',
+const safeUser = ({ id, name, email, role, isPortalAdmin }) => ({
+  id, name, email, role, ...(isPortalAdmin ? { isPortalAdmin: true } : {}),
+});
+const safeWorkspaceUser = ({ id, name, email, role, socialMedia, isPortalAdmin }) => ({
+  ...safeUser({ id, name, email, role, isPortalAdmin }), active: true, socialMedia: socialMedia || '',
 });
 const validToken = (token) => typeof token === 'string' && token.length <= 3800
   && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token);
@@ -27,6 +30,18 @@ export function createPocketbaseApi(options) {
   }
   const base = url.origin;
   const emailConfigured = Boolean(options.emailApiKey && options.emailFrom && options.adminEmail && options.adminPassword);
+  const invitationEmailConfigured = Boolean(options.emailApiKey && options.emailFrom && options.publicUrl);
+  const publicUrl = options.publicUrl;
+  let publicBaseUrl = '';
+  if (publicUrl) {
+    let parsedPublicUrl;
+    try { parsedPublicUrl = new URL(publicUrl); } catch { throw new Error('PUBLIC_URL must be an HTTPS origin (HTTP is allowed for loopback).'); }
+    if ((parsedPublicUrl.protocol !== 'https:' && !(parsedPublicUrl.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(parsedPublicUrl.hostname)))
+      || parsedPublicUrl.username || parsedPublicUrl.password || parsedPublicUrl.search || parsedPublicUrl.hash || parsedPublicUrl.pathname !== '/') {
+      throw new Error('PUBLIC_URL must be an HTTPS origin (HTTP is allowed for loopback).');
+    }
+    publicBaseUrl = parsedPublicUrl.origin;
+  }
   const setCookie = (res, token, age = 0) => res.setHeader('Set-Cookie',
     `${AUTH_COOKIE}=${token ?? ''}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${age}${options.secureCookies ? '; Secure' : ''}`);
 
@@ -55,6 +70,95 @@ export function createPocketbaseApi(options) {
       throw new ApiError(status, messages[status]);
     }
     return data;
+  }
+
+  async function requestMultipart(path, { token, form }) {
+    let response;
+    try {
+      response = await options.fetch(`${base}${path}`, {
+        method: 'POST', headers: { Authorization: token }, body: form,
+        signal: AbortSignal.timeout(options.timeoutMs), redirect: 'error',
+      });
+      if (response.redirected || (response.status >= 300 && response.status < 400)) throw unavailable();
+      const raw = await response.text();
+      const data = raw ? JSON.parse(raw) : null;
+      if (!response.ok) {
+        const status = [400, 401, 403, 404, 409, 413, 422].includes(response.status) ? response.status : 503;
+        const messages = {
+          400: 'Ugyldig filopplasting.', 401: 'Logg inn for å fortsette.', 403: 'Du har ikke tilgang til denne oppgaven.',
+          404: 'Fant ikke oppgaven.', 409: 'Innsendingen er allerede endret. Last inn oppgaven på nytt.',
+          413: 'Opplastingen er for stor.', 422: 'Ugyldig filopplasting.',
+        };
+        throw new ApiError(status, messages[status]);
+      }
+      return data;
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw unavailable();
+    }
+  }
+
+  async function downloadSubmissionFile(submissionId, filename, token) {
+    const record = await request(`/api/collections/content_submissions/records/${submissionId}`, { token });
+    const files = Array.isArray(record.files) ? record.files : [];
+    const extension = filename.split('.').pop().toLowerCase();
+    const contentType = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', mp4: 'video/mp4', webm: 'video/webm' }[extension];
+    if (!files.includes(filename) || !contentType) throw new ApiError(404, 'Fant ikke mediefilen.');
+    const fileAccess = await request('/api/files/token', { token, method: 'POST', body: {} });
+    let response;
+    try {
+      response = await options.fetch(`${base}/api/files/content_submissions/${submissionId}/${encodeURIComponent(filename)}?token=${encodeURIComponent(fileAccess.token)}`, {
+        signal: AbortSignal.timeout(options.timeoutMs), redirect: 'error',
+      });
+      if (!response.ok || response.redirected) throw new ApiError(404, 'Fant ikke mediefilen.');
+      return { status: 200, body: Buffer.from(await response.arrayBuffer()), contentType };
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw unavailable();
+    }
+  }
+
+  async function sendInvitation(token, application, setupToken) {
+    const tokenHash = createHash('sha256').update(setupToken).digest('hex');
+    let sent = false;
+    if (invitationEmailConfigured) {
+      try {
+        const response = await options.fetchEmail('https://api.resend.com/emails', {
+          method: 'POST', signal: AbortSignal.timeout(options.emailTimeoutMs), redirect: 'error',
+          headers: { Authorization: `Bearer ${options.emailApiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            from: options.emailFrom, to: [application.email], subject: 'Velkommen som ambassadør hos Ølbrygging',
+            text: `Hei ${application.name}!\n\nSøknaden din er godkjent. Opprett passordet ditt ved å åpne denne sikre lenken innen 48 timer:\n\n${publicBaseUrl}/#setup=${encodeURIComponent(setupToken)}\n\nHvis du ikke ba om dette, kan du se bort fra e-posten.`,
+          }),
+        });
+        sent = response.ok && !response.redirected;
+        await response.body?.cancel();
+      } catch {
+        // The account and invitation token are durable before email delivery is attempted.
+      }
+    }
+    try {
+      await request(`/api/portal/ambassador-applications/${application.id}/invitation-status`, {
+        token, method: 'POST', body: { status: sent ? 'sent' : 'failed', setupTokenHash: tokenHash },
+      });
+    } catch {
+      // The durable pending state can be safely retried by rotating the setup token.
+      sent = false;
+    }
+    return { ...application, invitationStatus: sent ? 'sent' : 'failed' };
+  }
+
+  async function reviewApplication(token, id, decision) {
+    const setupToken = randomBytes(32).toString('hex');
+    const tokenHash = createHash('sha256').update(setupToken).digest('hex');
+    const setupTokenExpiresAt = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
+    const temporaryPassword = randomBytes(48).toString('base64url');
+    const application = await request(`/api/portal/ambassador-applications/${id}/decision`, {
+      token, method: 'POST', body: {
+        decision, setupTokenHash: tokenHash, setupTokenExpiresAt, temporaryPassword,
+      },
+    });
+    return sendInvitation(token, application.application, setupToken);
   }
 
   function sessionAge(token) {
@@ -134,10 +238,24 @@ export function createPocketbaseApi(options) {
   }
 
   return async (req, res, pathname) => {
-    if (pathname === '/api/ambassador-applications') {
+    if (pathname === '/api/ambassador-applications' && req.method === 'POST') {
       const input = application.validateApplication(await readBody(req), (message) => new ApiError(400, message));
       await request('/api/portal/ambassador-applications', { method: 'POST', body: input });
       return { status: 201, body: { submitted: true } };
+    }
+    if (pathname === '/api/ambassador-account/setup' && req.method === 'POST') {
+      const input = await readBody(req);
+      checkFields(input, ['token', 'password']);
+      const setupToken = text(input.token, 'Invitasjonslenke', 128);
+      const password = input.password;
+      if (setupToken.length !== 64 || !/^[a-f0-9]{64}$/.test(setupToken)
+        || typeof password !== 'string' || password.length < 12 || password.length > 128) {
+        throw new ApiError(400, 'Lenken er ugyldig eller utløpt, eller passordet er for kort.');
+      }
+      const setupTokenHash = createHash('sha256').update(setupToken).digest('hex');
+      return { status: 200, body: await request('/api/portal/ambassador-account/setup', {
+        method: 'POST', body: { setupTokenHash, password },
+      }) };
     }
     if (pathname === '/api/login') {
       const body = await readBody(req);
@@ -170,6 +288,56 @@ export function createPocketbaseApi(options) {
         status: 200,
         body: { ...workspace, user: safeWorkspaceUser(workspace.user), users: workspace.users.map(safeWorkspaceUser), emailConfigured },
       };
+    }
+    if (pathname === '/api/ambassador-applications' && req.method === 'GET') {
+      return { status: 200, body: await request('/api/portal/ambassador-applications', { token: auth.token }) };
+    }
+    const applicationMatch = pathname.match(/^\/api\/ambassador-applications\/([a-z0-9]{15})\/(decision|retry-invitation)$/);
+    if (applicationMatch && req.method === 'POST') {
+      const input = await readBody(req);
+      checkFields(input, applicationMatch[2] === 'decision' ? ['decision'] : []);
+      const decision = applicationMatch[2] === 'retry-invitation' ? 'retry_invitation' : input.decision;
+      if (!['approved', 'declined', 'retry_invitation'].includes(decision)) throw new ApiError(400, 'Velg godkjenning eller avslag.');
+      try {
+        if (decision === 'declined') {
+          const result = await request(`/api/portal/ambassador-applications/${applicationMatch[1]}/decision`, {
+            token: auth.token, method: 'POST', body: { decision },
+          });
+          return { status: 200, body: { application: result.application } };
+        }
+        const invitation = await reviewApplication(auth.token, applicationMatch[1], decision);
+        return { status: 200, body: { application: invitation } };
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 409) {
+          throw new ApiError(409, 'Søknaden er allerede behandlet, eller e-postadressen er knyttet til en eksisterende konto. Kontroller søknaden.');
+        }
+        throw error;
+      }
+    }
+    const submissionFileMatch = pathname.match(/^\/api\/submissions\/([a-z0-9]{15})\/files\/([^/]+)$/);
+    if (submissionFileMatch && req.method === 'GET') {
+      return downloadSubmissionFile(submissionFileMatch[1], submissionFileMatch[2], auth.token);
+    }
+    const uploadMatch = pathname.match(/^\/api\/tickets\/([a-z0-9]{15})\/submissions$/);
+    if (uploadMatch && req.method === 'POST') {
+      const input = await validateSubmission(await readMultipart(req));
+      const form = new FormData();
+      form.append('caption', input.caption);
+      form.append('link', input.link);
+      for (const file of input.files) form.append('files', new Blob([file.data], { type: file.type }), file.name);
+      return { status: 201, body: await requestMultipart(`/api/portal/tickets/${uploadMatch[1]}/submissions`, { token: auth.token, form }) };
+    }
+    const publicationMatch = pathname.match(/^\/api\/tickets\/([a-z0-9]{15})\/publication$/);
+    if (publicationMatch) {
+      const input = await readBody(req);
+      checkFields(input, ['url']);
+      return { status: 200, body: await request(`/api/portal/tickets/${publicationMatch[1]}/publication`, { token: auth.token, method: 'PATCH', body: input }) };
+    }
+    const decisionMatch = pathname.match(/^\/api\/submissions\/([a-z0-9]{15})\/decision$/);
+    if (decisionMatch) {
+      const input = await readBody(req);
+      checkFields(input, ['decision', 'feedback']);
+      return { status: 200, body: await request(`/api/portal/submissions/${decisionMatch[1]}/decision`, { token: auth.token, method: 'POST', body: input }) };
     }
     if (pathname === '/api/products/preview') {
       const input = await readBody(req);

@@ -25,6 +25,7 @@ async function frontend() {
     clearTimeout: () => {},
     console,
     URL,
+    URLSearchParams,
   });
   runInContext(source, context);
   await new Promise(setImmediate);
@@ -80,12 +81,56 @@ test('mobile navigation keeps primary destinations and exposes secondary pages i
   }
 });
 
+test('only provisioned portal admins see applicant reviews and setup links render a password form', async () => {
+  const { context, run } = await frontend();
+  run(`state.user = { id: 'staff', name: 'Trusted staff', role: 'employee', isPortalAdmin: true };
+    state.products = []; state.tickets = []; state.users = []; state.articles = []; state.damageReports = [];
+    state.applications = [{ id: 'application0001', name: 'New applicant', email: 'new@example.invalid', phone: '+47 12345678',
+      addressLine1: 'Testveien 1', postalCode: '0123', city: 'Oslo', country: 'Norge', socialLinks: { instagram: 'https://instagram.com/new' },
+      status: 'pending', invitationStatus: 'not_sent', createdAt: '2026-10-30T12:00:00.000Z' }];
+    state.page = 'applications';`);
+  const html = run('renderApp(); app.innerHTML');
+  assert.match(html, /data-page="applications"/);
+  assert.match(html, /New applicant/);
+  assert.match(html, /new@example\.invalid/);
+  assert.match(html, /data-application-decision="approved"/);
+  assert.match(html, /data-application-decision="declined"/);
+  run('state.user = { id: "staff", name: "Regular staff", role: "employee" };');
+  assert.doesNotMatch(run('renderApp(); app.innerHTML'), /data-page="applications"/);
+  assert.match(run('applicationsPage()'), /bare tilgjengelig for administrator/);
+  let scrubbed;
+  context.location = { href: `https://portal.example.invalid/#setup=${'a'.repeat(64)}`, pathname: '/' };
+  context.history = { replaceState: (...args) => { scrubbed = args; } };
+  await run('start()');
+  assert.equal(Object.keys(scrubbed[0]).length, 0);
+  assert.equal(scrubbed[1], '');
+  assert.equal(scrubbed[2], '/');
+  assert.match(context.document.querySelector('#app').innerHTML, /id="ambassador-setup-form"/);
+  assert.match(context.document.querySelector('#app').innerHTML, /name="confirmation"/);
+});
+
+test('a delayed application list cannot restore private data after an account switch', async () => {
+  for (const nextUser of [null, { id: 'other-admin', role: 'employee', isPortalAdmin: true }]) {
+    const { context, run } = await frontend();
+    context.window = { scrollTo() {} };
+    run("state.user = { id: 'admin', role: 'employee', isPortalAdmin: true }; state.applications = [];");
+    let resolve;
+    context.fetch = () => new Promise((done) => { resolve = done; });
+    const pending = run("navigate('applications')");
+    context.nextUser = nextUser;
+    run('authVersion++; state.user = nextUser; clearApplications();');
+    resolve({ ok: true, json: async () => ({ applications: [{ id: 'private-application' }] }) });
+    await pending;
+    assert.equal(run('state.applications.length'), 0);
+  }
+});
+
 test('phone layout stylesheet is linked and precached without expanding the private cache boundary', () => {
   const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
   const worker = readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8');
   assert.match(html, /href="\/mobile\.css"/);
   assert.match(worker, /'\/mobile\.css'/);
-  assert.match(worker, /olbrygging-shell-v11/);
+  assert.match(worker, /olbrygging-shell-v13/);
   assert.doesNotMatch(worker, /\/api\//);
 });
 
@@ -275,6 +320,75 @@ test('metadata saves preserve the latest draft, cursor and email selection', asy
   assert.equal(elements['#message-body'].selectionEnd, 14);
 });
 
+test('a completed content upload preserves the conversation draft and cursor', async () => {
+  const { context, run, elements, listeners } = await frontend();
+  context.FormData = class {};
+  const button = { disabled: false };
+  const error = { textContent: '' };
+  const form = {
+    id: 'content-form', dataset: { ticketId: 'ticket-1' }, isConnected: true,
+    querySelector: (selector) => selector === '[type=submit]' ? button : selector === '.error' ? error : null,
+  };
+  const composer = { value: 'Original draft', selectionStart: 0, selectionEnd: 0 };
+  elements['#message-body'] = composer;
+  elements['[name=sendEmail]'] = { checked: true };
+  context.document.activeElement = composer;
+  run("state.user = {id:'emil', role:'ambassador'}; modalTicketId = 'ticket-1';");
+  context.rebuild = (_id, draft) => {
+    elements['#message-body'] = {
+      value: draft, focus() { context.document.activeElement = this; },
+      setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; },
+    };
+    elements['[name=sendEmail]'] = { checked: false };
+  };
+  run('ticketDetail = rebuild;');
+  let resolve;
+  context.fetch = async (url) => url.endsWith('/submissions')
+    ? new Promise((done) => { resolve = done; })
+    : { ok: true, json: async () => ({ user: { id: 'emil', role: 'ambassador' }, tickets: [] }) };
+  const pending = listeners.submit({ target: form, preventDefault() {} });
+  composer.value = 'A newer conversation draft';
+  composer.selectionStart = 3;
+  composer.selectionEnd = 8;
+  resolve({ ok: true, json: async () => ({ submission: {} }) });
+  await pending;
+  assert.equal(elements['#message-body'].value, 'A newer conversation draft');
+  assert.equal(elements['#message-body'].selectionStart, 3);
+  assert.equal(elements['#message-body'].selectionEnd, 8);
+  assert.equal(elements['[name=sendEmail]'].checked, true);
+  assert.equal(button.disabled, false);
+});
+
+test('a late content upload cannot reopen a closed dialog or refresh a different account', async () => {
+  for (const switched of [false, true]) {
+    const { context, run, listeners } = await frontend();
+    context.FormData = class {};
+    const button = { disabled: false };
+    const form = {
+      id: 'content-form', dataset: { ticketId: 'ticket-1' }, isConnected: true,
+      querySelector: (selector) => selector === '[type=submit]' ? button : { textContent: '' },
+    };
+    run("state.user = {id:'emil', role:'ambassador'}; modalTicketId = 'ticket-1';");
+    context.rebuild = () => { throw new Error('A closed dialog must not reopen'); };
+    run('ticketDetail = rebuild;');
+    let resolve;
+    let requests = 0;
+    context.fetch = async (url) => {
+      requests++;
+      if (url.endsWith('/submissions')) return new Promise((done) => { resolve = done; });
+      return { ok: true, json: async () => ({ user: { id: 'emil', role: 'ambassador' }, tickets: [] }) };
+    };
+    const pending = listeners.submit({ target: form, preventDefault() {} });
+    form.isConnected = false;
+    run(switched ? "authVersion++; state.user = {id:'nora', role:'employee'}; modalTicketId = null;" : 'modalTicketId = null;');
+    resolve({ ok: true, json: async () => ({ submission: {} }) });
+    await pending;
+    assert.equal(requests, switched ? 1 : 2);
+    if (switched) assert.equal(run('state.user.id'), 'nora');
+    assert.equal(button.disabled, false);
+  }
+});
+
 test('network failures give actionable feedback without clearing the workspace or draft', async () => {
   const { context, run, elements } = await frontend();
   run("state.user = { id: 'emil' }; state.tickets = [{ id: 'ticket-1001' }];");
@@ -305,6 +419,54 @@ test('ticket rows show the validated product link and fetched product image', as
   assert.match(row, /mobile-ticket-card/);
   assert.match(row, /Åpne samarbeid/);
   assert.equal(run("productLink('https://evil.example/product')"), '');
+});
+
+test('task content panel presents upload, review history, previews and publication controls by role', async () => {
+  const { context, run } = await frontend();
+  context.capture = (html) => { context.dialog = html; };
+  run(`state.user = { id: 'emil', name: 'Emil', role: 'ambassador' };
+    state.users = [{ id: 'emil', name: 'Emil', role: 'ambassador' }, { id: 'nora', name: 'Nora', role: 'employee' }];
+    state.tickets = [{ id: 'ticket-1', number: 1, subject: 'Innhold', status: 'in_progress',
+      ambassadorId: 'emil', assigneeId: 'nora', channel: 'Instagram', dueDate: null, messages: [], submissions: [] }];
+    showModal = capture;`);
+  let html = run('contentPanel(state.tickets[0])');
+  assert.match(html, /id="content-form"/);
+  assert.match(html, /name="files" type="file"[^>]*multiple required/);
+  assert.match(html, /name="caption"/);
+  assert.match(html, /name="link"/);
+  assert.doesNotMatch(html, /id="publication-form"/);
+
+  run(`state.user.role = 'employee';
+    state.tickets[0].status = 'review';
+    state.tickets[0].submissions = [{ id: 'submission-1', version: 1, status: 'submitted', caption: '<b>Trygt</b>',
+      link: 'https://example.invalid/draft', createdAt: '2026-11-02T12:00:00.000Z',
+      files: [{ name: 'draft.mp4', type: 'video/mp4' }] }];
+    ticketDetail('ticket-1');`);
+  html = context.dialog;
+  assert.match(html, /<video controls[^>]+\/api\/submissions\/submission-1\/files\/draft\.mp4/);
+  assert.match(html, /&lt;b&gt;Trygt&lt;\/b&gt;/);
+  assert.match(html, /data-content-decision="approved"/);
+  assert.match(html, /data-content-decision="changes_requested"/);
+  assert.match(html, /id="ticket-status" data-update="status" disabled/);
+  assert.match(run('ticketsPage()'), /Innhold til vurdering/);
+
+  run(`state.user.role = 'ambassador'; state.tickets[0].status = 'in_progress';
+    state.tickets[0].submissions[0].status = 'changes_requested';
+    state.tickets[0].submissions[0].feedback = 'Vis produktet tydeligere';
+    state.tickets[0].submissions[0].reviewerId = 'nora';`);
+  html = run('contentPanel(state.tickets[0])');
+  assert.match(html, /Send inn ny versjon/);
+  assert.match(html, /Vis produktet tydeligere/);
+  assert.doesNotMatch(html, /data-content-decision/);
+  run("state.tickets[0].submissions[0].status = 'approved';");
+  html = run('contentPanel(state.tickets[0])');
+  assert.match(html, /id="publication-form"/);
+  assert.doesNotMatch(html, /id="content-form"/);
+
+  run("state.user.role = 'employee'; ticketDetail('ticket-1');");
+  assert.doesNotMatch(context.dialog, /<option value="completed"/);
+  run("state.tickets[0].publicationUrl = 'https://example.invalid/post'; ticketDetail('ticket-1');");
+  assert.match(context.dialog, /<option value="completed"/);
 });
 
 test('a delayed product preview does not update a replacement request form', async () => {

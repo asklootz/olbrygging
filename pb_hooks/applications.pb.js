@@ -14,6 +14,7 @@ routerAdd('POST', '/api/portal/ambassador-applications', (e) => {
     const record = new Record(app.findCollectionByNameOrId('ambassador_applications'));
     for (const [key, value] of Object.entries(input)) record.set(key, value);
     record.set('status', 'pending');
+    record.set('invitationStatus', 'not_sent');
     record.set('termsVersion', TERMS_VERSION);
     record.set('termsAcceptedAt', new Date().toISOString());
     app.save(record);
@@ -21,8 +22,31 @@ routerAdd('POST', '/api/portal/ambassador-applications', (e) => {
   return e.json(201, { submitted: true });
 }, $apis.bodyLimit(24 * 1024));
 
+routerAdd('GET', '/api/portal/ambassador-applications', (e) => {
+  return require(__hooks + '/application-review.cjs').list(e);
+}, $apis.requireAuth('users'));
+
+routerAdd('POST', '/api/portal/ambassador-applications/{id}/decision', (e) => {
+  return require(__hooks + '/application-review.cjs').decide(e);
+}, $apis.requireAuth('users'), $apis.bodyLimit(24 * 1024));
+
+routerAdd('POST', '/api/portal/ambassador-applications/{id}/invitation-status', (e) => {
+  return require(__hooks + '/application-review.cjs').invitationStatus(e);
+}, $apis.requireAuth('users'), $apis.bodyLimit(24 * 1024));
+
+routerAdd('POST', '/api/portal/ambassador-account/setup', (e) => {
+  return require(__hooks + '/application-review.cjs').setup(e);
+}, $apis.bodyLimit(24 * 1024));
+
 // Even trusted administration may only link an ambassador, never an employee
 // or superuser. Linking is deliberate: possession of an email isn't identity.
+onRecordValidate((e) => {
+  if (e.record.getBool('isPortalAdmin') && e.record.getString('role') !== 'employee') {
+    throw new BadRequestError('Administratorrollen krever en ansattkonto.');
+  }
+  e.next();
+}, 'users');
+
 onRecordValidate((e) => {
   const userId = e.record.getString('userId');
   if (userId) {

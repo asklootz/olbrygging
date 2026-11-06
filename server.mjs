@@ -3,7 +3,7 @@ import { randomBytes, randomUUID, scryptSync, timingSafeEqual, createHash } from
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, realpathSync, statSync } from 'node:fs';
 import { dirname, resolve, sep, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ApiError, text, dateValue, checkFields, promotionQuantity, readBody } from './api.mjs';
+import { ApiError, text, dateValue, checkFields, promotionQuantity, readBody, readMultipart, validateSubmission } from './api.mjs';
 import { createPocketbaseApi } from './pocketbase.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -64,7 +64,7 @@ function seed() {
       { id: 'article-1', title: 'Slik merker du reklameinnhold', category: 'Innhold', body: 'Merk samarbeid tydelig som reklame eller annonse. Plasser merkingen slik at den er synlig før følgeren åpner eller leser innholdet.', authorId: 'nora', createdAt: at(-20), updatedAt: at(-2) },
       { id: 'article-2', title: 'Ta vare på humle og malt', category: 'Bryggetips', body: 'Oppbevar råvarer tørt, kjølig og lufttett. Humle holder best på aromaen når den skjermes fra lys og oksygen.', authorId: 'marius', createdAt: at(-12), updatedAt: at(-3) },
     ],
-    damageReports: [],
+    damageReports: [], submissions: [],
     tickets: [
       ticket('ticket-1001', 1001, 'Fra korn til glass – en liten bryggereise', 'Jeg vil lage en varm og ærlig bildeserie om mitt første brygg med Fjordglød. Demoforespørsel.', 'fjord-pale', 'in_progress', 'Instagram', [
         ['emil', 'Hei Nora! Jeg tenker tre innlegg: bryggedagen, gjæringen og den første smaken. Hva tror du?'],
@@ -216,6 +216,7 @@ async function readProductPage(value, fetchProductPage) {
 export function createApp(options = {}) {
   const dataFile = resolve(options.dataFile ?? process.env.DATA_FILE ?? resolve(ROOT, 'data/workspace.json'));
   const publicDir = resolve(options.publicDir ?? resolve(ROOT, 'public'));
+  const mediaDir = resolve(dirname(dataFile), 'content-media');
   const emailApiKey = options.emailApiKey ?? process.env.RESEND_API_KEY;
   const emailFrom = options.emailFrom ?? process.env.EMAIL_FROM;
   const emailConfigured = Boolean(emailApiKey && emailFrom);
@@ -231,6 +232,7 @@ export function createApp(options = {}) {
     fetch: options.fetchPocketbase ?? globalThis.fetch,
     timeoutMs: options.pocketbaseTimeoutMs ?? 8000,
     secureCookies, emailApiKey, emailFrom, emailTimeoutMs, fetchEmail,
+    publicUrl: options.publicUrl ?? process.env.PUBLIC_URL,
     readProductPage: fetchProductDetails,
   });
   if (process.env.NODE_ENV === 'production' && (!pocketbase || !secureCookies)) {
@@ -257,6 +259,7 @@ export function createApp(options = {}) {
     }
     state.articles ??= [];
     state.damageReports ??= [];
+    state.submissions ??= [];
     state.users = state.users.map((user) => ({ active: true, socialMedia: '', ...user }));
     state.version = 2;
     persist(state);
@@ -272,6 +275,48 @@ export function createApp(options = {}) {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify(body));
   };
+  const binary = (req, res, status, body, contentType) => {
+    const headers = { 'Content-Type': contentType, 'Cache-Control': 'private, no-store', 'Accept-Ranges': 'bytes' };
+    const range = req.headers.range;
+    if (range) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+      let start;
+      let end;
+      if (match && (match[1] || match[2])) {
+        if (!match[1]) {
+          const suffix = Number(match[2]);
+          if (Number.isSafeInteger(suffix) && suffix > 0) {
+            start = Math.max(body.length - suffix, 0);
+            end = body.length - 1;
+          }
+        } else {
+          start = Number(match[1]);
+          end = match[2] ? Number(match[2]) : body.length - 1;
+        }
+      }
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start >= body.length || end < start) {
+        res.writeHead(416, { ...headers, 'Content-Range': `bytes */${body.length}`, 'Content-Length': 0 });
+        return res.end();
+      }
+      end = Math.min(end, body.length - 1);
+      headers['Content-Range'] = `bytes ${start}-${end}/${body.length}`;
+      body = body.subarray(start, end + 1);
+      status = 206;
+    }
+    res.writeHead(status, { ...headers, 'Content-Length': body.length });
+    res.end(body);
+  };
+  const submissionJSON = (submission) => ({
+    id: submission.id, version: submission.version, caption: submission.caption, link: submission.link,
+    status: submission.status, submittedBy: submission.submittedBy, createdAt: submission.createdAt,
+    reviewerId: submission.reviewerId || null, feedback: submission.feedback || '', decidedAt: submission.decidedAt || null,
+    files: submission.files.map(({ name, displayName, type, size }) => ({ name, displayName, type, size })),
+  });
+  const ticketJSON = (ticket) => ({
+    ...ticket, publicationUrl: ticket.publicationUrl || null,
+    submissions: state.submissions.filter((submission) => submission.ticketId === ticket.id)
+      .sort((left, right) => left.version - right.version).map(submissionJSON),
+  });
   const currentUser = (req) => {
     const cookie = (req.headers.cookie || '').split(';').map((part) => part.trim()).find((part) => part.startsWith(`${COOKIE}=`));
     if (!cookie) return null;
@@ -314,13 +359,21 @@ export function createApp(options = {}) {
   async function api(req, res, pathname) {
     const method = req.method;
     const known = ['/api/config', '/api/session', '/api/login', '/api/logout', '/api/workspace', '/api/tickets', '/api/articles', '/api/damage-reports', '/api/profile', '/api/users'].includes(pathname)
-      || pathname === '/api/products/preview' || pathname === '/api/ambassador-applications' || pathname === '/api/tasks'
+      || pathname === '/api/products/preview' || pathname === '/api/ambassador-applications' || pathname === '/api/ambassador-account/setup' || pathname === '/api/tasks'
+      || /^\/api\/ambassador-applications\/[a-z0-9]{15}\/(?:decision|retry-invitation)$/.test(pathname)
       || /^\/api\/tickets\/[a-zA-Z0-9_-]{1,100}(?:\/messages|\/accept)?$/.test(pathname)
+      || /^\/api\/tickets\/[a-zA-Z0-9_-]{1,100}\/(?:submissions|publication)$/.test(pathname)
+      || /^\/api\/submissions\/[a-zA-Z0-9_-]{1,100}(?:\/decision|\/files\/[^/]+)$/.test(pathname)
       || /^\/api\/(articles|damage-reports|users)\/[a-zA-Z0-9_-]{1,100}$/.test(pathname);
     if (!known) throw new ApiError(404, 'Ukjent API-endepunkt.');
-    const allowed = ['/api/config', '/api/session', '/api/workspace'].includes(pathname) ? ['GET']
-      : pathname === '/api/articles' || pathname === '/api/users' ? ['GET', 'POST']
-        : pathname === '/api/damage-reports' || pathname === '/api/login' || pathname === '/api/logout' || pathname === '/api/tasks' || /\/accept$/.test(pathname) ? ['POST']
+    const fileDownload = /^\/api\/submissions\/[^/]+\/files\/[^/]+$/.test(pathname);
+    const publication = /^\/api\/tickets\/[^/]+\/publication$/.test(pathname);
+    const decision = /^\/api\/submissions\/[^/]+\/decision$/.test(pathname);
+    const upload = /^\/api\/tickets\/[^/]+\/submissions$/.test(pathname);
+    const allowed = ['/api/config', '/api/session', '/api/workspace'].includes(pathname) || fileDownload ? ['GET']
+      : pathname === '/api/articles' || pathname === '/api/users' || pathname === '/api/ambassador-applications' ? ['GET', 'POST']
+        : pathname === '/api/damage-reports' || pathname === '/api/login' || pathname === '/api/logout' || pathname === '/api/tasks' || upload || decision || /\/accept$/.test(pathname) ? ['POST']
+          : publication ? ['PATCH']
           : pathname === '/api/profile' || /^\/api\/tickets\/[^/]+$/.test(pathname) || /^\/api\/(articles|damage-reports|users)\/[^/]+$/.test(pathname) ? ['PATCH'] : ['POST'];
     if (!allowed.includes(method)) {
       res.setHeader('Allow', allowed.join(', '));
@@ -334,8 +387,12 @@ export function createApp(options = {}) {
       }
     }
     if (pathname === '/api/config') return json(res, 200, { demoMode: !pocketbase });
-    if (pathname === '/api/ambassador-applications') {
-      if (!pocketbase) throw new ApiError(503, 'Søknader krever PocketBase. Bruk den ordinære portalen, ikke den lokale demoen.');
+    if (pathname === '/api/ambassador-account/setup'
+      || pathname === '/api/ambassador-applications'
+      || /^\/api\/ambassador-applications\/[a-z0-9]{15}\/(?:decision|retry-invitation)$/.test(pathname)) {
+      if (!pocketbase) throw new ApiError(503, 'Søknadsbehandling og invitasjoner krever PocketBase og er ikke tilgjengelige i demomodus.');
+    }
+    if (pathname === '/api/ambassador-applications' && method === 'POST') {
       const now = Date.now();
       for (const [key, value] of applicationAttempts) if (value.until <= now) applicationAttempts.delete(key);
       // Do not trust caller-supplied forwarding headers as a rate-limit key.
@@ -349,7 +406,8 @@ export function createApp(options = {}) {
       applicationAttempts.set(key, attempt);
     }
     if (pocketbase) {
-      const { status, body } = await pocketbase(req, res, pathname);
+      const { status, body, contentType } = await pocketbase(req, res, pathname);
+      if (Buffer.isBuffer(body)) return binary(req, res, status, body, contentType || 'application/octet-stream');
       return json(res, status, body);
     }
     const user = currentUser(req);
@@ -390,7 +448,7 @@ export function createApp(options = {}) {
     if (pathname === '/api/workspace') {
       const today = new Date().toISOString().slice(0, 10);
       const tickets = state.tickets.filter((ticket) => user.role !== 'ambassador' || ticket.ambassadorId === user.id
-        || ticket.status === 'available' && !ticket.ambassadorId && ticket.acceptBy >= today);
+        || ticket.status === 'available' && !ticket.ambassadorId && ticket.acceptBy >= today).map(ticketJSON);
       const staff = user.role !== 'ambassador';
       const relevant = new Set([user.id, ...state.users.filter((item) => item.role === 'employee').map((item) => item.id)]);
       for (const ticket of tickets) {
@@ -416,6 +474,82 @@ export function createApp(options = {}) {
       const updated = updateProfile(user, body);
       commit({ ...state, users: state.users.map((item) => item.id === user.id ? updated : item) });
       return json(res, 200, { user: safeUser(updated) });
+    }
+    const downloadMatch = pathname.match(/^\/api\/submissions\/([a-zA-Z0-9_-]{1,100})\/files\/([^/]+)$/);
+    if (downloadMatch) {
+      const submission = state.submissions.find((item) => item.id === downloadMatch[1]);
+      if (!submission) throw new ApiError(404, 'Fant ikke mediefilen.');
+      const ticket = authorizedTicket(submission.ticketId, user);
+      if (user.role === 'ambassador' && ticket.ambassadorId !== user.id) throw new ApiError(404, 'Fant ikke mediefilen.');
+      const file = submission.files.find((item) => item.name === downloadMatch[2]);
+      if (!file || !/^[a-f0-9-]{36}\.[a-z0-9]+$/.test(file.storageKey)) throw new ApiError(404, 'Fant ikke mediefilen.');
+      return binary(req, res, 200, readFileSync(resolve(mediaDir, file.storageKey)), file.type);
+    }
+    const uploadMatch = pathname.match(/^\/api\/tickets\/([a-zA-Z0-9_-]{1,100})\/submissions$/);
+    if (uploadMatch) {
+      const input = await validateSubmission(await readMultipart(req));
+      const ticket = authorizedTicket(uploadMatch[1], user);
+      if (user.role !== 'ambassador' || ticket.ambassadorId !== user.id) {
+        throw new ApiError(403, 'Bare den tildelte ambassadøren kan sende innhold fra en pågående oppgave.');
+      }
+      const previous = state.submissions.filter((item) => item.ticketId === ticket.id).sort((a, b) => b.version - a.version)[0];
+      if (previous && previous.status !== 'changes_requested') throw new ApiError(409, 'Vent på tilbakemelding før du sender inn en ny versjon.');
+      if (ticket.status !== 'in_progress') throw new ApiError(400, 'Oppgaven må være pågående før du kan sende inn innhold.');
+      const version = (previous?.version ?? 0) + 1;
+      const files = input.files.map((file) => {
+        const extension = ({ 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'video/mp4': '.mp4', 'video/webm': '.webm' })[file.type];
+        const storageKey = `${randomUUID()}${extension}`;
+        mkdirSync(mediaDir, { recursive: true });
+        writeFileSync(resolve(mediaDir, storageKey), file.data, { mode: 0o600, flag: 'wx' });
+        return { name: storageKey, displayName: file.name, type: file.type, size: file.size, storageKey };
+      });
+      const createdAt = new Date().toISOString();
+      const submission = {
+        id: randomUUID(), ticketId: ticket.id, submittedBy: user.id, version,
+        caption: input.caption, link: input.link, files, status: 'submitted', createdAt,
+        reviewerId: null, feedback: '', decidedAt: null,
+      };
+      const updatedTicket = { ...ticket, status: 'review', updatedAt: createdAt };
+      commit({ ...state, tickets: state.tickets.map((item) => item.id === ticket.id ? updatedTicket : item), submissions: [...state.submissions, submission] });
+      return json(res, 201, { submission: submissionJSON(submission) });
+    }
+    const decisionMatch = pathname.match(/^\/api\/submissions\/([a-zA-Z0-9_-]{1,100})\/decision$/);
+    if (decisionMatch) {
+      const input = await readBody(req);
+      checkFields(input, ['decision', 'feedback']);
+      if (!['approved', 'changes_requested'].includes(input.decision)) throw new ApiError(400, 'Velg godkjenning eller be om endringer.');
+      const feedback = input.feedback === undefined || input.feedback === '' ? '' : text(input.feedback, 'Tilbakemelding', 2000);
+      if (input.decision === 'changes_requested' && !feedback) throw new ApiError(400, 'Skriv en tilbakemelding før du ber om endringer.');
+      const submission = state.submissions.find((item) => item.id === decisionMatch[1]);
+      if (!submission) throw new ApiError(404, 'Fant ikke innsendt innhold.');
+      const ticket = authorizedTicket(submission.ticketId, user);
+      const latest = state.submissions.filter((item) => item.ticketId === ticket.id).sort((a, b) => b.version - a.version)[0];
+      if (!['employee', 'admin'].includes(user.role)) throw new ApiError(403, 'Bare ansatte kan vurdere innhold.');
+      if (!latest || latest.id !== submission.id || submission.status !== 'submitted' || ticket.status !== 'review') {
+        throw new ApiError(409, 'Denne innholdsversjonen er ikke lenger til vurdering.');
+      }
+      const decidedAt = new Date().toISOString();
+      const updatedSubmission = { ...submission, status: input.decision, reviewerId: user.id, feedback, decidedAt };
+      const updatedTicket = { ...ticket, status: 'in_progress', updatedAt: decidedAt };
+      commit({ ...state, tickets: state.tickets.map((item) => item.id === ticket.id ? updatedTicket : item), submissions: state.submissions.map((item) => item.id === submission.id ? updatedSubmission : item) });
+      return json(res, 200, { submission: submissionJSON(updatedSubmission) });
+    }
+    const publicationMatch = pathname.match(/^\/api\/tickets\/([a-zA-Z0-9_-]{1,100})\/publication$/);
+    if (publicationMatch) {
+      const input = await readBody(req);
+      checkFields(input, ['url']);
+      const value = text(input.url, 'Publiseringslenke', 2000);
+      let url;
+      try { url = new URL(value); } catch { throw new ApiError(400, 'Oppgi en gyldig lenke til det publiserte innholdet.'); }
+      if (url.protocol !== 'https:' || url.username || url.password) throw new ApiError(400, 'Publiseringslenken må bruke HTTPS.');
+      const ticket = authorizedTicket(publicationMatch[1], user);
+      const latest = state.submissions.filter((item) => item.ticketId === ticket.id).sort((a, b) => b.version - a.version)[0];
+      if (user.role !== 'ambassador' || ticket.ambassadorId !== user.id || ticket.status !== 'in_progress' || !latest || latest.status !== 'approved') {
+        throw new ApiError(400, 'Registrer publiseringslenken etter at innholdet er godkjent.');
+      }
+      const updated = { ...ticket, publicationUrl: url.href, updatedAt: new Date().toISOString() };
+      commit({ ...state, tickets: state.tickets.map((item) => item.id === ticket.id ? updated : item) });
+      return json(res, 200, { ticket: ticketJSON(updated) });
     }
     const body = await readBody(req);
     if (pathname === '/api/products/preview') {
@@ -603,15 +737,25 @@ export function createApp(options = {}) {
       checkFields(body, ['status', 'assigneeId', 'dueDate', 'channel']);
       if (!Object.keys(body).length) throw new ApiError(400, 'Ingen endringer er oppgitt.');
       if (user.role === 'ambassador') {
-        const transitions = { approved: 'in_progress', in_progress: 'review' };
+        const transitions = { approved: 'in_progress' };
         const selectingChannel = Object.keys(body).length === 1 && body.channel !== undefined
           && ticket.ambassadorId === user.id && ['approved', 'in_progress'].includes(ticket.status);
         const changingStatus = Object.keys(body).length === 1 && body.status !== undefined && transitions[ticket.status] === body.status;
         if (!selectingChannel && !changingStatus) {
-          throw new ApiError(403, 'Du kan velge kanal på din oppgave, starte en godkjent oppgave eller sende en pågående oppgave til vurdering.');
+          throw new ApiError(403, 'Du kan velge kanal eller starte en godkjent oppgave. Send innhold i innsendingsfeltet for vurdering.');
         }
       }
       if (body.status !== undefined && !STATUSES.includes(body.status)) throw new ApiError(400, 'Ugyldig status.');
+      if (body.status === 'review') throw new ApiError(400, 'Send innholdet gjennom innsendingsfeltet for vurdering.');
+      const latest = state.submissions.filter((item) => item.ticketId === ticket.id).sort((a, b) => b.version - a.version)[0];
+      if (body.status !== undefined && latest?.status === 'submitted' && body.status !== ticket.status) {
+        throw new ApiError(409, 'Vurder innholdet før du endrer status på oppgaven.');
+      }
+      if (body.status === 'completed') {
+        if (!latest || latest.status !== 'approved' || !ticket.publicationUrl) {
+          throw new ApiError(400, 'Oppgaven kan lukkes først når innholdet er godkjent og lenken til publiseringen er registrert.');
+        }
+      }
       if (body.status === 'available' && (ticket.ambassadorId || !ticket.acceptBy || ticket.acceptBy < new Date().toISOString().slice(0, 10))) throw new ApiError(400, 'Bare en utildelt oppgave med gyldig akseptfrist kan være åpen.');
       if (body.status !== undefined && !ticket.ambassadorId && !['available', 'declined'].includes(body.status)) throw new ApiError(400, 'En ambassadør må akseptere oppgaven først.');
       if (body.assigneeId !== undefined && !state.users.some((item) => item.id === body.assigneeId && item.role === 'employee')) {
