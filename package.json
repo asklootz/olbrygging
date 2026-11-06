@@ -6,14 +6,27 @@
   "type": "module",
   "main": "server.mjs",
   "scripts": {
-    "start": "node server.mjs",
+    "start": "node --env-file-if-exists=.env server.mjs",
+    "demo": "node --env-file-if-exists=.env server.mjs --demo",
+    "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
+    "pocketbase:import-users": "node --env-file-if-exists=.env scripts/import-users.mjs",
+    "pocketbase": "pocketbase --pb-version 0.40.6",
+    "pocketbase:install": "pocketbase --pb-version 0.40.6 --version",
+    "pocketbase:start": "pocketbase --pb-version 0.40.6 serve --http=127.0.0.1:8090 --hooksDir=pb_hooks --migrationsDir=pb_migrations",
+    "test:integration": "npm run pocketbase:install && node --test test/pocketbase-backend.test.mjs",
     "test": "node --test",
-    "check": "node --check server.mjs && node --check public/app.js"
+    "check": "node --check server.mjs && node --check api.mjs && node --check pocketbase.mjs && node --check public/app.js && node --check public/pwa.js && node --check public/sw.js && node --check scripts/dev.mjs && node --check scripts/import-users.mjs && node --check pb_hooks/import-users.pb.js && node --check pb_hooks/application.cjs && node --check pb_hooks/application-review.cjs && node --check pb_hooks/applications.pb.js && node --check pb_hooks/portal.js && node --check pb_hooks/portal.pb.js && node --check pb_migrations/1792400200_ambassador_applications.js && node --check pb_migrations/1792400300_application_link_capacity.js && node --check pb_migrations/1792400400_application_social_platforms.js && node --check pb_migrations/1792400500_unassigned_ambassador_tasks.js && node --check pb_migrations/1792400600_ticket_promotion_instances.js && node --check pb_migrations/1792400700_promotion_ambassador_capacity.js && node --check pb_migrations/1792400800_content_submissions.js && node --check pb_migrations/1792400900_ambassador_application_review.js"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.9"
   },
   "keywords": [],
   "author": "",
-  "license": "UNLICENSED"
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@fadlee/pocketbase-bin": "1.0.1"
+  },
+  "overrides": {
+    "adm-zip": "0.6.1"
+  }
 }

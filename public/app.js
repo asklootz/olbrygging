@@ -1,7 +1,7 @@
 const app = document.querySelector('#app');
 const modalRoot = document.querySelector('#modal-root');
-const state = { user: null, products: [], tickets: [], users: [], page: 'overview', query: '', filter: 'Alle', emailConfigured: false };
-const statuses = { requested: 'Avventer svar', approved: 'Godkjent', in_progress: 'Pågår', review: 'Til gjennomgang', completed: 'Fullført', declined: 'Avslått' };
+const state = { user: null, products: [], tickets: [], users: [], articles: [], damageReports: [], applications: [], applicationsLoaded: false, applicationsError: '', page: 'overview', query: '', filter: 'Alle', profileId: '', editArticle: null, ownerFilter: 'Alle', emailConfigured: false, demoMode: false, setupToken: '' };
+const statuses = { available: 'Åpen for ambassadører', requested: 'Avventer svar', approved: 'Godkjent', in_progress: 'Pågår', review: 'Til gjennomgang', completed: 'Fullført', declined: 'Avslått' };
 const paths = {
   grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   bag: '<rect x="4" y="7" width="16" height="14" rx="2"/><path d="M8 8V6a4 4 0 0 1 8 0v2M9 12h6"/>',
@@ -21,6 +21,10 @@ const paths = {
   send: '<path d="m22 2-7 20-4-9L2 9 22 2Zm-11 11L22 2"/>',
   help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-1 .5-1 1.2-1 2.2M12 17h.01"/>',
   heart: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0l-1 1-1-1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/>',
+  book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v17H6.5A2.5 2.5 0 0 0 4 22z"/><path d="M4 5.5v14A2.5 2.5 0 0 1 6.5 17H20M8 7h8"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+  warning: '<path d="m12 3 10 18H2L12 3Z"/><path d="M12 9v5m0 3h.01"/>',
+  settings: '<path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"/><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.6a8 8 0 0 1-1.8 1l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.8-1l-1.7.6-1.4-2.4 1.4-1.1a8 8 0 0 1 0-2l-1.4-1.1 1.4-2.4 1.7.6a8 8 0 0 1 1.8-1L13 7h2.8l.3 1.8a8 8 0 0 1 1.8 1l1.7-.6 1.4 2.4-1.4 1.1a8 8 0 0 1-.2 2.3Z"/>',
 };
 const icon = (name) => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.box}</svg>`;
 const escape = (value = '') => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -34,8 +38,11 @@ const productLink = (value) => {
     return url.protocol === 'https:' && url.hostname === 'www.olbrygging.no' ? url.href : '';
   } catch { return ''; }
 };
-const employee = () => state.user?.role === 'employee';
+const employee = () => state.user?.role !== 'ambassador';
+const canReviewApplications = () => state.user?.isPortalAdmin === true;
+const clearApplications = () => { state.applications = []; state.applicationsLoaded = false; state.applicationsError = ''; };
 const active = (ticket) => !['completed', 'declined'].includes(ticket.status);
+const ticketNumber = (ticket) => ticket.displayNumber || String(ticket.number);
 const date = (value, options = { day: 'numeric', month: 'short' }) => value ? new Intl.DateTimeFormat('nb-NO', options).format(new Date(value)) : 'Ingen frist';
 const price = (value) => new Intl.NumberFormat('nb-NO', { maximumFractionDigits: 2 }).format(value);
 const avatar = (user, extra = '') => `<span class="avatar ${extra}" aria-hidden="true">${escape(initials(user?.name || '?'))}</span>`;
@@ -46,15 +53,42 @@ let lastFocus;
 let modalTicketId = null;
 let mutating = false;
 let authVersion = 0;
+const dirtyForms = new WeakSet();
 
 async function api(path, { method = 'GET', body } = {}) {
   const version = authVersion;
-  const response = await fetch(`/api${path}`, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  let response;
+  try {
+    response = await fetch(`/api${path}`, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  } catch {
+    throw new Error('Ingen kontakt med portalen. Kontroller nettforbindelsen og prøv igjen. Ulagret tekst beholdes mens siden er åpen.');
+  }
   const data = await response.json();
   if (!response.ok) {
     if (response.status === 401 && state.user && version === authVersion) {
       authVersion++;
       state.user = null;
+      clearApplications();
+      closeModal();
+      renderLogin();
+    }
+    throw new Error(data.error || 'Noe gikk galt. Prøv igjen.');
+  }
+  return data;
+}
+
+async function apiForm(path, form) {
+  const version = authVersion;
+  let response;
+  try { response = await fetch(`/api${path}`, { method: 'POST', body: form }); } catch {
+    throw new Error('Ingen kontakt med portalen. Kontroller nettforbindelsen og prøv igjen.');
+  }
+  const data = await response.json();
+  if (!response.ok) {
+    if (response.status === 401 && state.user && version === authVersion) {
+      authVersion++;
+      state.user = null;
+      clearApplications();
       closeModal();
       renderLogin();
     }
@@ -105,12 +139,18 @@ function renderLogin(error = '') {
     <section class="login-story">${brand()}<h1>Gode råvarer.<br>Enda bedre<br><em>samarbeid.</em></h1><p>For deg som deler bryggeglede. Velkommen til fellesskapet vårt.</p><div class="login-art">${illustration({ category: 'Ølsett', name: 'Illustrert bryggesett' })}</div><div class="story-foot">${icon('leaf')} Sammen skaper vi bryggeglede · Ølbrygging AS</div></section>
     <section class="login-panel"><div class="login-box"><div class="eyebrow">Laget for bryggeglede</div><h2>Velkommen tilbake.</h2><p>Produktene, samarbeidene og samtalene dine.<br>Alt samlet på ett sted.</p>
     <form id="login-form"><div class="field"><label for="email">E-postadresse</label><input id="email" name="email" type="email" autocomplete="username" placeholder="deg@eksempel.no" required maxlength="254"></div><div class="field"><label for="password">Passord</label><input id="password" name="password" type="password" autocomplete="current-password" placeholder="Ditt passord" required maxlength="128"></div><p class="error" role="alert">${escape(error)}</p><button class="primary" type="submit">Logg inn ${icon('arrow')}</button></form>
-    <div class="demo-box"><label>Ta en titt på portalen</label><p>Prøv med eksempeldata. Ingen ekte bestillinger eller e-poster sendes uten konfigurert e-posttjeneste.</p><div class="demo-actions"><button class="secondary" data-demo="ambassador">${icon('leaf')} Ambassadør</button><button class="secondary" data-demo="employee">${icon('bag')} Ansatt</button></div></div>
-    <p class="login-note">Lokal demonstrasjon · Eksempelprodukter, ikke en live produktkatalog.<br>Bruk kun fiktive opplysninger i demoen.</p></div></section></main>`;
+    <div class="apply-invitation"><span class="apply-symbol">${icon('leaf')}</span><div><h3>Vil du dele bryggeglede?</h3><p>Bli en del av ambassadørfellesskapet vårt.</p></div><button class="secondary" type="button" data-action="apply-ambassador">Søk om å bli ambassadør ${icon('arrow')}</button></div>
+    ${state.demoMode ? `<div class="demo-box"><label>Ta en titt på portalen</label><p>Prøv med eksempeldata. Ingen ekte bestillinger eller e-poster sendes uten konfigurert e-posttjeneste.</p><div class="demo-actions"><button class="secondary" data-demo="ambassador">${icon('leaf')} Ambassadør</button><button class="secondary" data-demo="employee">${icon('bag')} Ansatt</button></div></div>` : ''}
+    <p class="login-note">${state.demoMode ? 'Lokal demonstrasjon med fiktive eksempeldata.<br>Bruk kun fiktive opplysninger i demoen.' : 'Bruk kontoen du har fått av Ølbrygging.<br>Kontakt administrator hvis du trenger tilgang eller nytt passord.'}</p></div></section></main>`;
+}
+
+function renderAccountSetup(error = '') {
+  app.innerHTML = `<main class="login"><section class="login-story">${brand()}<h1>Velkommen til<br><em>ambassadørfellesskapet.</em></h1><p>Velg et personlig passord for å aktivere kontoen din.</p><div class="login-art">${illustration({ category: 'Ølsett', name: 'Illustrert bryggesett' })}</div></section><section class="login-panel"><div class="login-box"><div class="eyebrow">Sikker kontoopprettelse</div><h2>Velg passord</h2><p>Lenken kan bare brukes én gang og utløper etter 48 timer.</p><form id="ambassador-setup-form"><div class="field"><label for="setup-password">Nytt passord</label><input id="setup-password" name="password" type="password" autocomplete="new-password" required minlength="12" maxlength="128"></div><div class="field"><label for="setup-confirmation">Gjenta passord</label><input id="setup-confirmation" name="confirmation" type="password" autocomplete="new-password" required minlength="12" maxlength="128"></div><p class="error" role="alert">${escape(error)}</p><button class="primary" type="submit">Aktiver konto ${icon('check')}</button></form></div></section></main>`;
 }
 
 async function login(email, password, button) {
   const version = ++authVersion;
+  clearApplications();
   if (button) button.disabled = true;
   try {
     const data = await api('/login', { method: 'POST', body: { email, password } });
@@ -125,39 +165,41 @@ async function login(email, password, button) {
   }
 }
 
-async function loadWorkspace() {
+async function loadWorkspace(cleanForm = null) {
   const version = authVersion;
   const data = await api('/workspace');
   if (version !== authVersion) return;
+  if (cleanForm) dirtyForms.delete(cleanForm);
   Object.assign(state, data);
+  if (!canReviewApplications()) clearApplications();
   render();
 }
 
 function matchingTickets() {
   const query = state.query.toLocaleLowerCase('nb-NO');
   return state.tickets.filter((ticket) => {
-    const text = [ticket.subject, ticket.number, ticketProduct(ticket)?.name, person(ticket.ambassadorId)?.name].join(' ').toLocaleLowerCase('nb-NO');
-    return text.includes(query) && (state.filter === 'Alle' || ticket.status === state.filter);
+    const text = [ticket.subject, ticketNumber(ticket), ticketProduct(ticket)?.name, person(ticket.ambassadorId)?.name].join(' ').toLocaleLowerCase('nb-NO');
+    return text.includes(query) && (state.filter === 'Alle' || ticket.status === state.filter)
+      && (!employee() || state.ownerFilter === 'Alle' || ticket.ambassadorId === state.ownerFilter);
   }).sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
 }
 
 function render() {
   if (!state.user) return renderLogin();
-  const titles = { overview: 'Oversikt', tickets: 'Samarbeid', products: 'Produktkatalog', messages: 'Meldinger' };
+  const titles = { overview: 'Oversikt', tickets: 'Oppgaver', messages: 'Meldinger', profiles: 'Ambassadører', knowledge: 'Kunnskapsbase', damage: 'Skademeldinger', settings: 'Innstillinger', admin: 'Brukeradministrasjon', applications: 'Ambassadørsøknader' };
+  const links = [['overview', 'grid', 'Oversikt'], ['tickets', 'bag', employee() ? 'Oppgaver' : 'Mine samarbeid'], ['messages', 'chat', 'Meldinger'], ['profiles', 'user', employee() ? 'Ambassadører' : 'Min profil'], ['knowledge', 'book', 'Kunnskapsbase'], ['damage', 'warning', 'Skademeldinger'], ['settings', 'settings', 'Innstillinger'], ...(state.user.role === 'admin' ? [['admin', 'user', 'Brukere']] : []), ...(canReviewApplications() ? [['applications', 'user', 'Søknader']] : [])];
   app.innerHTML = `<div class="shell"><aside class="sidebar">${brand()}<div class="nav-label">DITT ARBEIDSROM</div><nav class="nav" aria-label="Hovedmeny">${[
-    ['overview', 'grid', 'Oversikt'],
-    ['tickets', 'bag', employee() ? 'Alle samarbeid' : 'Mine samarbeid'],
-    ['products', 'box', 'Produktkatalog'],
-    ['messages', 'chat', 'Meldinger'],
-  ].map(([page, symbol, label]) => `<button data-page="${page}" class="${state.page === page ? 'active' : ''}" ${state.page === page ? 'aria-current="page"' : ''}>${icon(symbol)}<span>${label}</span>${page === 'tickets' ? `<span class="count">${state.tickets.filter(active).length}</span>` : ''}</button>`).join('')}</nav>
+    ...links,
+  ].map(([page, symbol, label]) => `<button data-page="${page}" ${['profiles', 'knowledge', 'damage', 'settings', 'admin', 'applications'].includes(page) ? 'data-mobile-secondary' : ''} class="${state.page === page ? 'active' : ''}" ${state.page === page ? 'aria-current="page"' : ''}>${icon(symbol)}<span>${label}</span>${page === 'tickets' ? `<span class="count">${employee() ? state.tickets.filter((ticket) => ticket.status === 'review').length : state.tickets.filter(active).length}</span>` : page === 'damage' ? `<span class="count">${state.damageReports.filter((report) => report.status === 'pending').length}</span>` : ''}</button>`).join('')}<button class="more-nav" data-action="more-menu" aria-label="Flere valg" aria-haspopup="dialog">${icon('plus')}<span>Mer</span></button></nav>
     <div class="sidebar-bottom"><div class="sidebar-note">${icon('leaf')}<h3>Vi brygger bedre sammen.</h3><p>En idé, et spørsmål eller litt inspirasjon? Vi er her for deg.</p><button data-action="help">Slik fungerer portalen ${icon('arrow')}</button></div><div class="side-user">${avatar(state.user)}<div><strong>${escape(state.user.name)}</strong><small>${employee() ? 'Ølbrygging-teamet' : 'Ambassadør'}</small></div><button data-action="logout" title="Logg ut" aria-label="Logg ut">${icon('logout')}</button></div></div></aside>
-    <div class="workspace"><header class="topbar"><div class="mobile-brand" aria-label="Ølbrygging">ø</div><div class="breadcrumb">Ambassadørportalen ${icon('chevron')}<span>${titles[state.page]}</span></div><div class="top-tools"><div class="search">${icon('search')}<label class="sr-only" for="global-search">Søk i produkter og samarbeid</label><input id="global-search" type="search" placeholder="Søk i portalen …" value="${escape(state.query)}" maxlength="100"></div><span class="demo-label">Demomodus</span><button class="icon-button" data-action="help" aria-label="Hjelp og informasjon" title="Hjelp">${icon('help')}</button>${avatar(state.user, 'green')}</div></header>
+    <div class="workspace"><header class="topbar"><div class="mobile-brand" aria-label="Ølbrygging">ø</div><div class="breadcrumb">Ambassadørportalen ${icon('chevron')}<span>${titles[state.page]}</span></div><div class="top-tools"><div class="search">${icon('search')}<label class="sr-only" for="global-search">Søk i oppgaver og samarbeid</label><input id="global-search" type="search" placeholder="Søk i oppgaver og samarbeid …" value="${escape(state.query)}" maxlength="100"></div>${state.demoMode ? '<span class="demo-label">Demomodus</span>' : ''}<button class="icon-button" data-action="help" aria-label="Hjelp og informasjon" title="Hjelp">${icon('help')}</button>${avatar(state.user, 'green')}<button class="icon-button mobile-logout" data-action="logout" title="Logg ut" aria-label="Logg ut">${icon('logout')}</button></div></header>
     <main class="main" id="main-content">${pageContent()}</main></div></div>`;
 }
 
 function pageContent() {
-  const content = state.page === 'overview' ? overview() : state.page === 'products' ? catalogue() : state.page === 'messages' ? inbox() : ticketsPage();
-  return `${content}<footer class="page-foot"><span>© ${new Date().getFullYear()} Ølbrygging AS · Sammen skaper vi bryggeglede.</span><span>${icon('leaf')} Eksempeldata · Lokal demo</span></footer>`;
+  const pages = { overview, tickets: ticketsPage, messages: inbox, profiles: profilesPage, knowledge: knowledgePage, damage: damagePage, settings: settingsPage, admin: adminPage, applications: applicationsPage };
+  const content = (pages[state.page] || overview)();
+  return `${content}<footer class="page-foot"><span>© ${new Date().getFullYear()} Ølbrygging AS · Sammen skaper vi bryggeglede.</span><span>${icon('leaf')} ${state.demoMode ? 'Eksempeldata · Lokal demo' : 'Ambassadørportalen'}</span></footer>`;
 }
 
 function heading(title, subtitle, action = '') {
@@ -167,29 +209,20 @@ function heading(title, subtitle, action = '') {
 function overview() {
   const activeCount = state.tickets.filter(active).length;
   const requested = state.tickets.filter((ticket) => ticket.status === 'requested').length;
+  const review = state.tickets.filter((ticket) => ticket.status === 'review').length;
   const complete = state.tickets.filter((ticket) => ticket.status === 'completed').length;
   const metrics = [
     [employee() ? 'Aktive samarbeid' : 'Mine aktive samarbeid', activeCount, 'bag', '', 'Gode ting er på gang'],
-    [employee() ? 'Venter på godkjenning' : 'Avventer svar', requested, 'clock', 'amber', 'Forespørsler til teamet'],
+    [employee() ? 'Til behandling' : 'Avventer svar', employee() ? requested + review : requested, 'clock', 'amber', employee() ? `${requested} forespørsler · ${review} innhold` : 'Forespørsler til teamet'],
     ['Fullførte samarbeid', complete, 'check', 'purple', 'Bryggeglede delt videre'],
-    ['Tilgjengelige produkter', state.products.filter((item) => item.available).length, 'box', 'blue', 'Finn din neste favoritt'],
   ];
   const tickets = matchingTickets().filter(active).slice(0, 4);
-  const assignedContact = person(state.tickets.find(active)?.assigneeId) || state.users.find((user) => user.role === 'employee');
-  return `${heading(`Hei, ${escape(state.user.name.split(' ')[0])} <span class="heading-wave">👋</span>`, employee() ? 'Her er det som skjer i ambassadørfellesskapet ditt.' : 'Hyggelig å se deg! Her er oversikten over dine samarbeid.', `<button class="primary orange" data-page="products">${icon('plus')} Finn nye produkter</button>`)}
+  const assignedContact = person(state.tickets.find((ticket) => active(ticket) && ticket.ambassadorId)?.assigneeId) || state.users.find((user) => user.role === 'employee');
+  return `${heading(`Hei, ${escape(state.user.name.split(' ')[0])} <span class="heading-wave">👋</span>`, employee() ? 'Her er det som skjer i ambassadørfellesskapet ditt.' : 'Hyggelig å se deg! Her er oversikten over dine samarbeid.', employee() ? `<button class="primary orange" data-action="create-task">${icon('plus')} Opprett oppgave</button>` : `<button class="primary orange" data-action="new-promotion">${icon('plus')} Send en forespørsel</button>`)}
     <section class="metrics" aria-label="Nøkkeltall">${metrics.map(([label, value, symbol, color, note]) => `<div class="metric"><div class="metric-top">${label}<span class="metric-icon ${color}">${icon(symbol)}</span></div><strong>${value}</strong><small>${note}</small></div>`).join('')}</section>
     <div class="overview-grid"><section class="card"><div class="card-head"><div><h2>${employee() ? 'Aktive samarbeid' : 'Dine samarbeid'} <span class="count">${activeCount}</span></h2><p>Fra den første ideen til ferdig innhold.</p></div><button class="text-button" data-page="tickets">Se alle ${icon('arrow')}</button></div>${ticketTable(tickets)}<div class="table-foot">${icon('leaf')} Små øyeblikk. Stor bryggeglede.</div></section>
-    <aside class="overview-aside"><section class="card contact"><div class="eyebrow">${employee() ? 'Ditt ambassadørteam' : 'Din kontakt hos oss'}</div><div class="contact-person">${avatar(employee() ? state.user : assignedContact, 'large green')}<div><h3>${escape((employee() ? state.user : assignedContact)?.name || 'Ølbrygging-teamet')}</h3><p>${employee() ? 'Ansvarlig kontaktperson' : 'Ambassadøransvarlig · Ølbrygging'}</p></div></div><p class="contact-copy">${employee() ? 'Følg opp forespørsler, gi tilbakemeldinger og hjelp ambassadørene videre.' : 'Lurer du på noe? Jeg hjelper deg med produkter, ideer og alt imellom.'}</p><button class="primary" data-action="contact">${icon('chat')} ${employee() ? 'Åpne samtaler' : 'Send en melding'}</button><div class="contact-footer">${icon('mail')} Samtaler knyttet til samarbeid</div></section><section class="tip-card"><h3>${icon('leaf')} Et lite bryggetips</h3><p>Det beste innholdet er ekte. Del prosessen, de små feilene og gleden ved den første smaken.</p></section></aside></div>
-    <section><div class="section-heading"><div><h2>Klar for noe nytt?</h2><p>Oppdag produkter du har lyst til å dele med følgerne dine.</p></div><button class="text-button" data-page="products">Se produktkatalogen ${icon('arrow')}</button></div><div class="product-grid">${filteredProducts().slice(0, 4).map(productCard).join('') || empty('Ingen produkter passer søket ditt.')}</div></section>`;
-}
-
-function filteredProducts() {
-  const query = state.query.toLocaleLowerCase('nb-NO');
-  return state.products.filter((item) => `${item.name} ${item.category} ${item.description}`.toLocaleLowerCase('nb-NO').includes(query) && (state.page !== 'products' || state.filter === 'Alle' || item.category === state.filter));
-}
-
-function productCard(item, index) {
-  return `<article class="product-card"><div class="product-image">${illustration(item, index)}<span class="tag">${item.available ? 'FOR AMBASSADØRER' : 'IKKE TILGJENGELIG'}</span></div><div class="product-info"><div class="category">${escape(item.category)}</div><h3>${escape(item.name)}</h3><p>${escape(item.description)}</p><div class="product-action"><strong>${price(item.price)} kr <small>veiledende</small></strong><button data-product="${escape(item.id)}" ${!item.available ? 'disabled' : ''}>${employee() ? 'Opprett samarbeid' : 'Jeg vil promotere'} ↗</button></div></div></article>`;
+    <aside class="overview-aside"><section class="card contact"><div class="eyebrow">${employee() ? 'Ditt ambassadørteam' : 'Din kontakt hos oss'}</div><div class="contact-person">${avatar(employee() ? state.user : assignedContact, 'large green')}<div><h3>${escape((employee() ? state.user : assignedContact)?.name || 'Ølbrygging-teamet')}</h3><p>${employee() ? 'Ansvarlig kontaktperson' : 'Ambassadøransvarlig · Ølbrygging'}</p></div></div><p class="contact-copy">${employee() ? 'Følg opp forespørsler, gi tilbakemeldinger og hjelp ambassadørene videre.' : 'Lurer du på noe? Jeg hjelper deg med samarbeid, ideer og alt imellom.'}</p><button class="primary" data-action="contact">${icon('chat')} ${employee() ? 'Åpne samtaler' : 'Send en melding'}</button><div class="contact-footer">${icon('mail')} Samtaler knyttet til samarbeid</div></section><section class="tip-card"><h3>${icon('leaf')} Et lite bryggetips</h3><p>Det beste innholdet er ekte. Del prosessen, de små feilene og gleden ved den første smaken.</p></section></aside></div>
+    ${!employee() ? `<section class="card ambassador-prompt"><div><h2>Har du en idé til et produkt?</h2><p>Send oss produktlenken og fortell hvordan du vil promotere den.</p></div><button class="primary" data-action="new-promotion">Send en forespørsel ${icon('arrow')}</button></section>` : ''}`;
 }
 
 function empty(message) {
@@ -197,8 +230,8 @@ function empty(message) {
 }
 
 function ticketTable(tickets) {
-  if (!tickets.length) return empty('Ingen samarbeid her ennå. Finn et produkt i katalogen for å komme i gang.');
-  return `<div class="table-wrap"><table><thead><tr><th>SAMARBEID / PRODUKT</th><th>STATUS</th><th class="due-column">FRIST</th><th><span class="sr-only">Åpne</span></th></tr></thead><tbody>${tickets.map((ticket, index) => {
+  if (!tickets.length) return empty(employee() ? 'Ingen oppgaver her ennå.' : 'Send en promoteringsforespørsel med lenke til produktet for å komme i gang.');
+  const rows = tickets.map((ticket, index) => {
     const item = ticketProduct(ticket);
     const href = productLink(ticket.productUrl);
     const name = item?.name || ticket.subject;
@@ -206,17 +239,23 @@ function ticketTable(tickets) {
       item.price !== null && item.price !== undefined ? `${price(item.price)} ${escape(item.currency || 'NOK')}` : '',
       item.description ? escape(item.description) : '',
     ].filter(Boolean).join(' · ');
-    return `<tr data-ticket="${escape(ticket.id)}"><td><div class="ticket-cell"><div class="mini-product">${productVisual(item, index)}</div><div><strong>${href ? `<a class="product-title-link" href="${escape(href)}" target="_blank" rel="noopener noreferrer">${escape(name)}</a>` : escape(name)}</strong><small>#${escape(ticket.number)} · ${employee() ? escape(person(ticket.ambassadorId)?.name) : escape(ticket.channel)}</small>${details ? `<small class="ticket-product-details">${details}</small>` : ''}</div></div></td><td>${pill(ticket.status)}</td><td class="due due-column">${date(ticket.dueDate)}</td><td><button class="row-arrow" data-ticket="${escape(ticket.id)}" aria-label="Åpne ${escape(ticket.subject)}">${icon('chevron')}</button></td></tr>`;
-  }).join('')}</tbody></table></div>`;
+    return `<tr data-ticket="${escape(ticket.id)}"><td><div class="ticket-cell"><div class="mini-product">${productVisual(item, index)}</div><div><strong>${href ? `<a class="product-title-link" href="${escape(href)}" target="_blank" rel="noopener noreferrer">${escape(name)}</a>` : escape(name)}</strong><small>#${escape(ticketNumber(ticket))} · ${employee() ? escape(person(ticket.ambassadorId)?.name) : escape(ticket.channel)}</small>${details ? `<small class="ticket-product-details">${details}</small>` : ''}</div></div></td><td>${pill(ticket.status)}</td><td class="due due-column">${date(ticket.dueDate)}</td><td><button class="row-arrow" data-ticket="${escape(ticket.id)}" aria-label="Åpne ${escape(ticket.subject)}">${icon('chevron')}</button></td></tr>`;
+  });
+  const cards = tickets.map((ticket, index) => {
+    const item = ticketProduct(ticket);
+    const href = productLink(ticket.productUrl);
+    const name = item?.name || ticket.subject;
+    const isAvailable = ticket.status === 'available' && !ticket.ambassadorId && state.user?.role === 'ambassador';
+    return `<article class="mobile-ticket-card"><div class="mobile-ticket-product"><div class="mini-product">${productVisual(item, index)}</div><div class="mobile-ticket-title"><strong>${href ? `<a class="product-title-link" href="${escape(href)}" target="_blank" rel="noopener noreferrer">${escape(name)}</a>` : escape(name)}</strong><small>#${escape(ticketNumber(ticket))} · ${employee() ? escape(person(ticket.assigneeId)?.name) : escape(ticket.channel || 'Publiseringskanal velges ved aksept')}</small></div></div><div class="mobile-ticket-meta">${pill(ticket.status)}<span>${icon('clock')}${isAvailable ? `Meld interesse innen ${date(ticket.acceptBy)}` : `Publiser ${date(ticket.dueDate)}`}</span></div><button class="secondary mobile-ticket-open" data-ticket="${escape(ticket.id)}">${isAvailable ? 'Se oppgaven' : 'Åpne samarbeid'} ${icon('arrow')}</button>${isAvailable ? `<button class="primary mobile-task-accept" data-action="accept-task" data-ticket-id="${escape(ticket.id)}">Meld interesse</button>` : ''}</article>`;
+  }).join('');
+  return `<div class="table-wrap desktop-ticket-table"><table><thead><tr><th>SAMARBEID / PRODUKT</th><th>STATUS</th><th class="due-column">FRIST</th><th><span class="sr-only">Åpne</span></th></tr></thead><tbody>${rows.join('')}</tbody></table></div><div class="mobile-ticket-list">${cards}</div>`;
 }
 
 function ticketsPage() {
-  return `${heading(employee() ? 'Alle samarbeid' : 'Mine samarbeid', 'Hold oversikt fra første forespørsel til publisert innhold.', `<button class="primary" data-page="products">${icon('plus')} Nytt samarbeid</button>`)}<div class="filters" aria-label="Filtrer samarbeid">${[['Alle', 'Alle'], ...Object.entries(statuses)].map(([value, label]) => `<button class="filter ${state.filter === value ? 'active' : ''}" data-filter="${value}" aria-pressed="${state.filter === value}">${label}</button>`).join('')}</div><section class="card"><div class="card-head"><h2>Samarbeid <span class="count">${matchingTickets().length}</span></h2><span class="muted small">Sist oppdatert først</span></div>${ticketTable(matchingTickets())}</section>`;
-}
-
-function catalogue() {
-  const categories = ['Alle', ...new Set(state.products.map((item) => item.category))];
-  return `${heading('Finn din neste favoritt.', 'Velg et produkt du brenner for. Vi tar oss av resten.')}<div class="filters" aria-label="Produktkategorier">${categories.map((category) => `<button class="filter ${state.filter === category ? 'active' : ''}" data-filter="${escape(category)}" aria-pressed="${state.filter === category}">${escape(category)}</button>`).join('')}</div><div class="section-heading"><p>${filteredProducts().length} produkter · Eksempelkatalog, priser er veiledende</p></div><section class="product-grid" aria-label="Produktkatalog">${filteredProducts().map(productCard).join('') || empty('Ingen produkter passer søket ditt.')}</section>`;
+  const ambassadors = state.users.filter((user) => user.role === 'ambassador' && user.active !== false);
+  const action = employee() ? `<button class="primary" data-action="create-task">${icon('plus')} Opprett oppgave</button>` : `<button class="primary" data-action="new-promotion">${icon('plus')} Send en forespørsel</button>`;
+  const reviewQueue = state.tickets.filter((ticket) => ticket.status === 'review');
+  return `${heading(employee() ? 'Oppgaver' : 'Mine samarbeid', employee() ? 'Publiser oppgaver for ambassadørene og følg samarbeidet videre.' : 'Finn åpne oppgaver eller følg opp samarbeidene dine.', action)}${employee() ? `<section class="card review-queue"><div class="card-head"><div><h2>Innhold til vurdering <span class="count">${reviewQueue.length}</span></h2><p>Se gjennom innsendte bilder og videoer, og gi ambassadøren beskjed.</p></div></div>${ticketTable(reviewQueue)}</section><div class="field owner-filter"><label for="owner-filter">Filtrer på ambassadør</label><select id="owner-filter" name="ownerFilter" data-owner-filter><option value="Alle">Alle ambassadører</option>${ambassadors.map((user) => `<option value="${escape(user.id)}" ${state.ownerFilter === user.id ? 'selected' : ''}>${escape(user.name)}</option>`).join('')}</select></div>` : `<button class="secondary page-request-promotion" data-action="new-promotion">${icon('plus')} Ny promoteringsforespørsel</button>`}<div class="filters" aria-label="Filtrer samarbeid">${[['Alle', 'Alle'], ...Object.entries(statuses)].map(([value, label]) => `<button class="filter ${state.filter === value ? 'active' : ''}" data-filter="${value}" aria-pressed="${state.filter === value}">${label}</button>`).join('')}</div><section class="card"><div class="card-head"><h2>${employee() ? 'Oppgaver' : 'Oppgaver og samarbeid'} <span class="count">${matchingTickets().length}</span></h2><span class="muted small">Sist oppdatert først</span></div>${ticketTable(matchingTickets())}</section>`;
 }
 
 function inbox() {
@@ -226,6 +265,69 @@ function inbox() {
     const author = person(last.authorId);
     return `<button class="card inbox-item" data-ticket="${escape(ticket.id)}">${avatar(author, author?.role === 'employee' ? 'green' : '')}<div class="message-preview"><h3>${escape(ticket.subject)} ${pill(ticket.status)}</h3><p>${escape(author?.name)}: ${escape(last.body)}</p></div><small>${date(last.createdAt)}</small>${icon('chevron')}</button>`;
   }).join('') || empty('Ingen samtaler ennå. Åpne et samarbeid for å sende den første meldingen.')}</section>`;
+}
+
+function profilesPage() {
+  const ambassadors = state.users.filter((user) => user.role === 'ambassador');
+  const selectedId = employee() ? state.profileId || ambassadors[0]?.id : state.user.id;
+  const profile = employee() ? ambassadors.find((user) => user.id === selectedId) : state.user;
+  return `${heading(employee() ? 'Ambassadørprofiler' : 'Min profil', employee() ? 'Kontaktinformasjon og kanaler for ambassadørene.' : 'Hold kontaktinformasjonen din oppdatert.')}
+    <section class="card profile-card">${employee() ? `<div class="field"><label for="profile-select">Ambassadør</label><select id="profile-select" data-profile-select>${ambassadors.map((user) => `<option value="${escape(user.id)}" ${user.id === profile?.id ? 'selected' : ''}>${escape(user.name)}</option>`).join('')}</select></div>` : ''}
+    ${profile ? `<form id="profile-form" data-user-id="${escape(profile.id)}"><div class="field"><label for="profile-name">Navn</label><input id="profile-name" name="name" value="${escape(profile.name)}" required maxlength="100"></div><div class="field"><label for="profile-email">E-post</label><input id="profile-email" name="email" type="email" value="${escape(profile.email)}" required maxlength="254"></div><div class="field"><label for="profile-social">Sosiale medier / profil-lenke</label><input id="profile-social" name="socialMedia" value="${escape(profile.socialMedia)}" maxlength="200" placeholder="@brukernavn eller lenke"></div><p class="error" role="alert"></p><button class="primary" type="submit">Lagre profil ${icon('check')}</button></form>` : empty('Ingen ambassadørprofiler er tilgjengelige.')}</section>
+    ${employee() ? `<section class="section-heading"><div><h2>Oppgaver per ambassadør</h2><p>Se samarbeidsstatus og kontaktperson.</p></div></section><section class="card">${ticketTable(state.tickets.filter((ticket) => ticket.ambassadorId === selectedId))}</section>` : ''}`;
+}
+
+function knowledgePage() {
+  const categories = ['Alle', ...new Set(state.articles.map((article) => article.category))];
+  const query = state.query.toLocaleLowerCase('nb-NO');
+  const articles = state.articles.filter((article) => (state.filter === 'Alle' || article.category === state.filter)
+    && `${article.title} ${article.body} ${article.category}`.toLocaleLowerCase('nb-NO').includes(query));
+  const edit = state.editArticle && state.articles.find((article) => article.id === state.editArticle);
+  return `${heading('Kunnskapsbase', 'Bryggetips, retningslinjer og svar samlet på ett sted.', employee() ? `<button class="primary" data-action="new-article">${icon('plus')} Ny artikkel</button>` : '')}
+    <div class="filters" aria-label="Artikkelkategorier">${categories.map((category) => `<button class="filter ${state.filter === category ? 'active' : ''}" data-filter="${escape(category)}" aria-pressed="${state.filter === category}">${escape(category)}</button>`).join('')}</div>
+    ${employee() && state.editArticle !== null ? `<section class="card article-editor"><h2>${edit ? 'Rediger artikkel' : 'Ny artikkel'}</h2><form id="article-form" data-article-id="${escape(edit?.id || '')}"><div class="field"><label for="article-title">Tittel</label><input id="article-title" name="title" value="${escape(edit?.title || '')}" required maxlength="160"></div><div class="field"><label for="article-category">Kategori</label><input id="article-category" name="category" value="${escape(edit?.category || '')}" required maxlength="60"></div><div class="field"><label for="article-body">Innhold</label><textarea id="article-body" name="body" required maxlength="12000">${escape(edit?.body || '')}</textarea></div><p class="error" role="alert"></p><div class="modal-actions"><button class="secondary" type="button" data-action="cancel-article">Avbryt</button><button class="primary" type="submit">Lagre artikkel</button></div></form></section>` : ''}
+    <section class="article-list" aria-label="Artikler">${articles.map((article) => `<article class="card article-card"><div class="category">${escape(article.category)}</div><h2>${escape(article.title)}</h2><p>${escape(article.body)}</p><small>Skrevet av ${escape(person(article.authorId)?.name || 'Ølbrygging-teamet')} · Sist endret av ${escape(person(article.updatedBy || article.authorId)?.name || 'Ølbrygging-teamet')} ${date(article.updatedAt, { day: 'numeric', month: 'short', year: 'numeric' })}</small>${employee() ? `<button class="text-button" data-article-edit="${escape(article.id)}">Rediger ${icon('arrow')}</button>` : ''}</article>`).join('') || empty('Ingen artikler i denne kategorien ennå.')}</section>`;
+}
+
+function damagePage() {
+  const reports = state.damageReports;
+  const labels = { pending: 'Til behandling', approved: 'Godkjent', rejected: 'Avslått' };
+  return `${heading('Skademeldinger', employee() ? 'Gjennomgå meldinger om varer fra ambassadørfellesskapet.' : 'Meld fra dersom en vare du mottok er skadet.')}
+    ${employee() ? '' : `<section class="card damage-form-card"><h2>Registrer en skade</h2><form id="damage-form"><div class="field"><label for="damage-product">Produkt</label><select id="damage-product" name="productId"><option value="">Ikke knyttet til et produkt</option>${state.products.map((item) => `<option value="${escape(item.id)}">${escape(item.name)}</option>`).join('')}</select></div><div class="field"><label for="damage-ticket">Samarbeid (valgfritt)</label><select id="damage-ticket" name="ticketId"><option value="">Velg samarbeid</option>${state.tickets.map((ticket) => `<option value="${escape(ticket.id)}">${escape(ticket.subject)}</option>`).join('')}</select></div><div class="field"><label for="damage-description">Beskriv skaden</label><textarea id="damage-description" name="description" required maxlength="5000" placeholder="Hva er skadet, og når oppdaget du det?"></textarea></div><p class="error" role="alert"></p><button class="primary" type="submit">Send skademelding ${icon('arrow')}</button></form></section>`}
+    <section class="damage-list">${reports.map((report) => `<article class="card damage-card"><div class="category">${labels[report.status] || report.status}</div><h2>${escape(product(report.productId)?.name || 'Produkt ikke oppgitt')}</h2><p>${escape(report.description)}</p><small>${escape(person(report.ambassadorId)?.name || 'Ambassadør')} · ${date(report.createdAt, { day: 'numeric', month: 'long', year: 'numeric' })}${report.reviewNote ? ` · ${escape(report.reviewNote)}` : ''}</small>${employee() && report.status === 'pending' ? `<div class="modal-actions"><button class="secondary" data-report-decision="rejected" data-report-id="${escape(report.id)}">Avslå</button><button class="primary" data-report-decision="approved" data-report-id="${escape(report.id)}">Godkjenn</button></div>` : ''}</article>`).join('') || empty('Ingen skademeldinger ennå.')}</section>`;
+}
+
+function settingsPage() {
+  let settings = { theme: 'light', compact: false, notifications: true };
+  try { settings = { ...settings, ...JSON.parse(localStorage.getItem(`settings-${state.user.id}`) || '{}') }; } catch {}
+  document.documentElement.dataset.theme = settings.theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.classList.toggle('compact', Boolean(settings.compact));
+  return `${heading('Innstillinger', 'Tilpass visningen og varslene dine.')}<section class="card settings-card"><form id="settings-form"><div class="field"><label for="setting-theme">Tema</label><select id="setting-theme" name="theme"><option value="light" ${settings.theme === 'light' ? 'selected' : ''}>Lyst</option><option value="dark" ${settings.theme === 'dark' ? 'selected' : ''}>Mørkt</option></select></div><label class="check-label"><input name="compact" type="checkbox" ${settings.compact ? 'checked' : ''}> Kompakt visning</label><label class="check-label"><input name="notifications" type="checkbox" ${settings.notifications ? 'checked' : ''}> Vis varsler om nye meldinger</label><p class="small muted">Innstillingene lagres i denne nettleseren.</p><button class="primary" type="submit">Lagre innstillinger ${icon('check')}</button></form></section>`;
+}
+
+function adminPage() {
+  if (state.user.role !== 'admin') return empty('Denne siden er bare tilgjengelig for administrator.');
+  return `${heading('Brukeradministrasjon', 'Opprett kontoer og administrer tilgang for ansatte og ambassadører.')}
+    <section class="card admin-create"><h2>Opprett bruker</h2><form id="admin-create-form"><div class="field"><label for="new-name">Navn</label><input id="new-name" name="name" required maxlength="100"></div><div class="field"><label for="new-email">E-post</label><input id="new-email" name="email" type="email" required maxlength="254"></div><div class="form-row"><div class="field"><label for="new-role">Rolle</label><select id="new-role" name="role"><option value="ambassador">Ambassadør</option><option value="employee">Ansatt</option></select></div><div class="field"><label for="new-password">Midlertidig passord</label><input id="new-password" name="password" type="password" required minlength="12" maxlength="128"></div></div><p class="error" role="alert"></p><button class="primary" type="submit">Opprett konto ${icon('plus')}</button></form></section>
+    <section class="admin-users" aria-label="Brukere">${state.users.map((user) => `<article class="card admin-user"><h2>${escape(user.name)} <span class="pill ${user.active ? 'approved' : 'declined'}">${user.active ? 'Aktiv' : 'Deaktivert'}</span></h2><form class="admin-user-form" data-user-id="${escape(user.id)}"><div class="field"><label for="role-${escape(user.id)}">Rolle</label><select id="role-${escape(user.id)}" name="role" ${user.id === state.user.id ? 'disabled' : ''}><option value="ambassador" ${user.role === 'ambassador' ? 'selected' : ''}>Ambassadør</option><option value="employee" ${user.role === 'employee' ? 'selected' : ''}>Ansatt</option>${user.role === 'admin' ? '<option value="admin" selected>Administrator</option>' : ''}</select></div><label class="check-label"><input name="active" type="checkbox" ${user.active ? 'checked' : ''} ${user.id === state.user.id ? 'disabled' : ''}> Aktiv konto</label><button class="secondary" type="submit" ${user.id === state.user.id ? 'disabled' : ''}>Lagre tilgang</button></form></article>`).join('')}</section>`;
+}
+
+function applicationsPage() {
+  if (!canReviewApplications()) return empty('Denne siden er bare tilgjengelig for administrator.');
+  const invitationLabels = { not_sent: 'Ikke sendt', pending: 'Venter på e-post', sent: 'Invitasjon sendt', failed: 'E-post kunne ikke sendes', accepted: 'Konto aktivert' };
+  const cards = state.applications.map((application) => {
+    const socialLinks = Object.entries(application.socialLinks || {}).filter(([, url]) => typeof url === 'string' && url)
+      .map(([platform, url]) => {
+        try {
+          const parsed = new URL(url);
+          return parsed.protocol === 'https:' ? `<a href="${escape(parsed.href)}" target="_blank" rel="noopener noreferrer">${escape(platform)}</a>` : '';
+        } catch { return ''; }
+      }).filter(Boolean).join(' · ');
+    const address = [application.addressLine1, application.addressLine2, [application.postalCode, application.city].filter(Boolean).join(' '), application.region, application.country].filter(Boolean).join(', ');
+    return `<article class="card application-card"><div class="application-heading"><div><span class="eyebrow">Mottatt ${date(application.createdAt, { day: 'numeric', month: 'long', year: 'numeric' })}</span><h2>${escape(application.name)}</h2></div><span class="pill ${escape(application.status)}">${application.status === 'pending' ? 'Til behandling' : application.status === 'approved' ? 'Godkjent' : 'Avslått'}</span></div><dl class="application-details"><div><dt>E-post</dt><dd><a href="mailto:${escape(application.email)}">${escape(application.email)}</a></dd></div><div><dt>Telefon</dt><dd>${escape(application.phone)}</dd></div><div><dt>Adresse</dt><dd>${escape(address)}</dd></div><div><dt>Sosiale medier</dt><dd>${socialLinks || 'Ingen lenker'}</dd></div></dl>${application.status === 'pending' ? `<div class="application-actions"><button class="secondary" data-application-decision="declined" data-application-id="${escape(application.id)}">Avslå søknad</button><button class="primary" data-application-decision="approved" data-application-id="${escape(application.id)}">Godkjenn og inviter ${icon('check')}</button></div>` : application.status === 'approved' ? `<div class="application-invitation"><span class="pill ${application.invitationStatus === 'sent' || application.invitationStatus === 'accepted' ? 'approved' : application.invitationStatus === 'failed' ? 'declined' : 'requested'}">${escape(invitationLabels[application.invitationStatus] || 'Ukjent status')}</span>${application.invitationStatus !== 'accepted' ? `<button class="secondary" data-application-retry="${escape(application.id)}">Send invitasjon på nytt</button>` : ''}</div>` : `<small class="muted">Søknaden er avslått.</small>`}</article>`;
+  }).join('');
+  const placeholder = state.applicationsError || (state.applicationsLoaded ? 'Ingen søknader ennå.' : 'Henter søknader …');
+  return `${heading('Ambassadørsøknader', 'Gjennomgå søknader. Når du godkjenner, opprettes en ambassadørkonto og søkeren får en sikker lenke for å velge passord.', `<button class="secondary" data-action="refresh-applications">${icon('check')} Oppdater</button>`)}<section class="application-list" aria-label="Søknader">${cards || empty(placeholder)}</section>`;
 }
 
 function showModal(content, drawer = false) {
@@ -248,47 +350,197 @@ function modalHead(title, eyebrow = '') {
   return `<header class="modal-head"><div>${eyebrow ? `<div class="eyebrow">${eyebrow}</div>` : ''}<h2 id="modal-title">${title}</h2></div><button class="icon-button" data-action="close" aria-label="Lukk">${icon('close')}</button></header>`;
 }
 
-function requestProduct(id) {
-  const item = product(id);
-  if (!item || !item.available) return;
+function moreMenu() {
+  const pages = [
+    ['profiles', 'user', employee() ? 'Ambassadører' : 'Min profil'],
+    ['knowledge', 'book', 'Kunnskapsbase'], ['damage', 'warning', 'Skademeldinger'],
+    ['settings', 'settings', 'Innstillinger'],
+    ...(state.user?.role === 'admin' ? [['admin', 'user', 'Brukeradministrasjon']] : []),
+    ...(canReviewApplications() ? [['applications', 'user', 'Ambassadørsøknader']] : []),
+  ];
+  showModal(`${modalHead('Flere valg', 'Ambassadørportalen')}<nav class="more-menu" aria-label="Flere sider">${pages.map(([page, symbol, label]) => `<button class="secondary" data-page="${page}" ${state.page === page ? 'aria-current="page"' : ''}>${icon(symbol)}<span>${label}</span>${state.page === page ? '<span class="sr-only">Nåværende side</span>' : ''}</button>`).join('')}<button class="secondary" data-action="help">${icon('help')}<span>Hjelp og informasjon</span></button></nav>`);
+}
+
+const socialPlatforms = [
+  ['instagram', 'Instagram', 'https://www.instagram.com/dinprofil'],
+  ['facebook', 'Facebook', 'https://www.facebook.com/dinprofil'],
+  ['tiktok', 'TikTok', 'https://www.tiktok.com/@dinprofil'],
+  ['twitter', 'X (Twitter)', 'https://x.com/dinprofil'],
+  ['bluesky', 'Bluesky', 'https://bsky.app/profile/dinprofil.bsky.social'],
+  ['youtube', 'YouTube', 'https://www.youtube.com/@dinprofil'],
+];
+
+function applyAmbassador() {
+  showModal(`${modalHead('Del bryggegleden med oss.', 'Bli ambassadør')}
+    <form id="ambassador-application-form" class="modal-body application-form">
+      <p>Fortell oss hvem du er og hvor du deler innhold. Vi vurderer søknaden og tar kontakt på e-post. Dette oppretter ikke en innloggingskonto.</p>
+      ${state.demoMode ? '<p class="application-notice">Dette er en lokal demo. Søknader kan bare sendes i portalen med PocketBase.</p>' : ''}
+      <fieldset><legend><span>01</span> Om deg</legend>
+        <div class="field"><label for="applicant-name">Fullt navn</label><input id="applicant-name" name="name" autocomplete="name" required maxlength="160" placeholder="Fornavn og etternavn"></div>
+        <div class="form-row"><div class="field"><label for="applicant-phone">Telefonnummer</label><input id="applicant-phone" name="phone" type="tel" autocomplete="tel" required maxlength="40" placeholder="+47 123 45 678"></div><div class="field"><label for="applicant-email">E-postadresse</label><input id="applicant-email" name="email" type="email" autocomplete="email" required maxlength="254" placeholder="deg@eksempel.no"></div></div>
+      </fieldset>
+      <fieldset><legend><span>02</span> Full adresse</legend>
+        <div class="field"><label for="applicant-address">Gateadresse og husnummer</label><input id="applicant-address" name="addressLine1" autocomplete="address-line1" required maxlength="200" placeholder="Bryggeveien 12"></div>
+        <div class="field"><label for="applicant-address2">Adresselinje 2 (valgfri)</label><input id="applicant-address2" name="addressLine2" autocomplete="address-line2" maxlength="200" placeholder="Leilighet, etasje eller c/o"></div>
+        <div class="form-row"><div class="field"><label for="applicant-postal">Postnummer</label><input id="applicant-postal" name="postalCode" autocomplete="postal-code" required maxlength="20" placeholder="0123"></div><div class="field"><label for="applicant-city">Poststed</label><input id="applicant-city" name="city" autocomplete="address-level2" required maxlength="100" placeholder="Oslo"></div></div>
+        <div class="form-row"><div class="field"><label for="applicant-region">Fylke / region (valgfri)</label><input id="applicant-region" name="region" autocomplete="address-level1" maxlength="100"></div><div class="field"><label for="applicant-country">Land</label><input id="applicant-country" name="country" autocomplete="country-name" required maxlength="100" value="Norge"></div></div>
+      </fieldset>
+      <fieldset><legend><span>03</span> Her finner vi deg</legend><p id="social-links-help" class="small muted">Legg inn lenkene til profilene dine. Feltene er valgfrie, men minst én profil er påkrevd.</p>
+        <div class="application-social-grid">${socialPlatforms.map(([key, label, placeholder]) => `<div class="field"><label for="applicant-social-${key}">${label}</label><input id="applicant-social-${key}" name="social_${key}" type="url" inputmode="url" maxlength="1000" placeholder="${placeholder}" aria-describedby="social-links-help"></div>`).join('')}</div>
+      </fieldset>
+      <div class="application-consent"><label class="check-label" for="applicant-terms"><input id="applicant-terms" name="termsAccepted" type="checkbox" required><span>Jeg godtar søknadsvilkårene og at opplysningene brukes til å vurdere og følge opp søknaden.</span></label><a href="/ambassador-terms.html" target="_blank" rel="noopener" class="terms-link">Les søknadsvilkårene og informasjon om personopplysninger (åpnes i ny fane)</a></div>
+      <p class="error" role="alert" tabindex="-1"></p><div class="modal-actions"><button class="secondary" type="button" data-action="close">Avbryt</button><button class="primary" type="submit" ${state.demoMode ? 'disabled' : ''}>Send søknad ${icon('arrow')}</button></div>
+    </form>`);
+}
+
+async function submitAmbassadorApplication(form, fields, button) {
+  if (button.disabled || !form.reportValidity()) return;
+  const body = Object.fromEntries(['name', 'phone', 'email', 'addressLine1', 'addressLine2', 'postalCode', 'city', 'region', 'country']
+    .map((key) => [key, String(fields.get(key) || '').trim()]));
+  body.socialLinks = Object.fromEntries(socialPlatforms.map(([key]) => [key, String(fields.get(`social_${key}`) || '').trim()]));
+  body.termsAccepted = fields.has('termsAccepted');
+  const error = form.querySelector('.error');
+  error.textContent = '';
+  if (!Object.values(body.socialLinks).some(Boolean)) {
+    error.textContent = 'Legg inn minst én sosial medieprofil.';
+    form.querySelector('#applicant-social-instagram').focus();
+    return;
+  }
+  button.disabled = true;
+  form.setAttribute('aria-busy', 'true');
+  try {
+    await api('/ambassador-applications', { method: 'POST', body });
+    // A delayed response must not replace another dialog or a signed-in view.
+    if (!form.isConnected) return;
+    showModal(`${modalHead('Takk for søknaden!', 'Søknaden er mottatt')}<div class="modal-body application-success"><span class="application-success-icon">${icon('check')}</span><p>Så hyggelig at du vil bli ambassadør. Vi vurderer opplysningene dine og tar kontakt på e-post.</p><p>Du får ikke tilgang til portalen før søknaden er godkjent og en konto er opprettet.</p><button class="primary" type="button" data-action="close">Tilbake til innlogging ${icon('arrow')}</button></div>`);
+  } catch (failure) {
+    if (form.isConnected) { error.textContent = failure.message; error.focus(); }
+  } finally {
+    button.disabled = false;
+    form.removeAttribute('aria-busy');
+  }
+}
+
+function requestPromotion() {
+  if (employee()) return createTask();
   modalTicketId = null;
-  showModal(`${modalHead('La oss lage noe bra sammen.')}<form id="request-form" class="modal-body" data-product-id="${escape(id)}"><div class="request-product"><div class="mini-product">${productVisual(item)}</div><div><h3>${escape(item.name)}</h3><p>${escape(item.category)} · ${price(item.price)} kr veiledende</p></div></div>
-    <div class="field"><label for="product-url">Lenke til produktet i nettbutikken</label><div class="product-url-row"><input id="product-url" name="productUrl" type="url" required maxlength="2000" placeholder="https://www.olbrygging.no/produkt/…"><button class="secondary" type="button" data-action="preview-product">Hent info</button></div><small class="muted">Produktnavn, pris, bilde og beskrivelse hentes fra olbrygging.no.</small></div><div id="product-preview" aria-live="polite"><p class="small muted">Lim inn produktlenken og velg «Hent info» for å se detaljene.</p></div>
-    ${employee() ? `<div class="field"><label for="ambassadorId">Ambassadør</label><select id="ambassadorId" name="ambassadorId" required>${state.users.filter((user) => user.role === 'ambassador').map((user) => `<option value="${escape(user.id)}">${escape(user.name)}</option>`).join('')}</select></div>` : ''}
-    <div class="field"><label for="subject">Navn på samarbeidet</label><input id="subject" name="subject" required maxlength="150" value="${escape(item.name)} – ${employee() ? 'nytt samarbeid' : 'min bryggeopplevelse'}"></div>
+  showModal(`${modalHead('La oss lage noe bra sammen.', 'Ny promoteringsforespørsel')}<form id="request-form" class="modal-body">
+    <div class="field"><label for="product-url">Lenke til produktet i nettbutikken</label><div class="product-url-row"><input id="product-url" name="productUrl" type="url" required maxlength="2000" placeholder="https://www.olbrygging.no/produkt/…"><button class="secondary" type="button" data-action="preview-product">Hent info</button></div><small class="muted">Lim inn en produktside. Produktnavn, bilde, beskrivelse og pris hentes automatisk.</small></div><div id="product-preview" aria-live="polite"><p class="small muted">Hent produktinfo før du sender forespørselen.</p></div>
+    <div class="field promotion-quantity"><label for="promotion-count">Hvor mange promoteringer ønsker du?</label><input id="promotion-count" name="promotionCount" type="number" inputmode="numeric" min="1" max="50" step="1" value="1" required><small>Standard er 1. Velg opptil 50 separate promoteringer; hver får eget nummer og kan følges opp separat av deg.</small></div>
+    <div class="field"><label for="subject">Navn på samarbeidet</label><input id="subject" name="subject" required maxlength="150" placeholder="For eksempel: Min bryggeopplevelse"></div>
     <div class="form-row"><div class="field"><label for="channel">Hvor vil du dele?</label><select id="channel" name="channel">${['Instagram', 'TikTok', 'YouTube', 'Blogg', 'Annet'].map((channel) => `<option>${channel}</option>`).join('')}</select></div><div class="field"><label for="dueDate">Ønsket publiseringsdato</label><input id="dueDate" name="dueDate" type="date" required min="${new Date().toISOString().slice(0, 10)}"></div></div>
     <div class="field"><label for="description">Fortell litt om ideen din</label><textarea id="description" name="description" required maxlength="5000" placeholder="Hva har du lyst til å lage? Hvem ønsker du å inspirere?"></textarea></div>
-    <p class="small muted">Kontaktpersonen din følger opp forespørselen her i portalen. Dette er ikke en bestilling.</p><p class="error" role="alert"></p><div class="modal-actions"><button class="secondary" type="button" data-action="close">Avbryt</button><button class="primary" type="submit">Send forespørsel ${icon('arrow')}</button></div></form>`);
+      <p class="small muted">Kontaktpersonen din følger opp forespørselen her i portalen. Dette er ikke en bestilling.</p><p class="error" role="alert"></p><div class="modal-actions"><button class="secondary" type="button" data-action="close">Avbryt</button><button class="primary" type="submit">Send forespørsel ${icon('arrow')}</button></div></form>`);
+}
+
+function createTask() {
+  if (!employee()) return;
+  modalTicketId = null;
+  showModal(`${modalHead('Opprett en åpen ambassadøroppgave.', 'Ny oppgave')}
+    <form id="task-form" class="modal-body task-form">
+      <p>Legg inn en produktside og en idé. Oppgaven blir synlig for aktive ambassadører fram til fristen for å melde interesse.</p>
+      <div class="field"><label for="task-product-url">Produktlenke på olbrygging.no</label><div class="product-url-row"><input id="task-product-url" name="productUrl" type="url" required maxlength="2000" placeholder="https://www.olbrygging.no/produkt/…"><button class="secondary" type="button" data-action="preview-product">Hent produktinfo</button></div><small class="muted">Produktbilde, navn, beskrivelse og pris hentes fra lenken.</small></div>
+      <div id="product-preview" aria-live="polite"><p class="small muted">Hent produktinfo før du publiserer oppgaven.</p></div>
+      <div class="field promotion-quantity"><label for="task-promotion-count">Hvor mange ambassadører kan promotere dette produktet?</label><input id="task-promotion-count" name="promotionCount" type="number" inputmode="numeric" min="1" max="50" step="1" value="1" required><small>Standard er 1. Høyere antall lager separate oppgaver med egne nummer. Hver plass tildeles én ambassadør.</small></div>
+      <div class="field"><label for="task-subject">Oppgavenavn</label><input id="task-subject" name="subject" required maxlength="160" placeholder="For eksempel: Vis fram sesongens nyheter"></div>
+      <div class="field"><label for="task-description">Idé eller instruksjoner</label><textarea id="task-description" name="description" required maxlength="5000" placeholder="Beskriv innholdsideen, viktige punkter eller ønsket vinkling. Ambassadørene velger selv publiseringsplattform etter at de har meldt interesse."></textarea></div>
+      <div class="form-row"><div class="field"><label for="task-accept-by">Frist for å melde interesse</label><input id="task-accept-by" name="acceptBy" type="date" min="${new Date().toISOString().slice(0, 10)}" required></div><div class="field"><label for="task-due-date">Publiseringsfrist</label><input id="task-due-date" name="dueDate" type="date" min="${new Date().toISOString().slice(0, 10)}" required></div></div>
+      <p class="small muted">Du velger ikke ambassadør eller publiseringsplattform nå. Den første ambassadøren som melder interesse innen fristen får oppgaven.</p>
+      <p class="error" role="alert"></p><div class="modal-actions"><button class="secondary" type="button" data-action="close">Avbryt</button><button class="primary" type="submit">Publiser oppgave ${icon('arrow')}</button></div>
+    </form>`);
+}
+
+function contentPanel(ticket) {
+  const submissions = ticket.submissions || [];
+  const latest = submissions.at(-1);
+  const canSubmit = !employee() && ticket.status === 'in_progress' && (!latest || latest.status === 'changes_requested');
+  const canPublish = !employee() && ticket.status === 'in_progress' && latest?.status === 'approved';
+  const history = submissions.map((submission) => {
+    const statusLabel = { submitted: 'Venter på vurdering', approved: 'Godkjent', changes_requested: 'Endringer ønskes' }[submission.status] || submission.status;
+    const statusClass = submission.status === 'submitted' ? 'review' : submission.status;
+    return `<article class="submission-version"><div class="submission-heading"><h4>Versjon ${submission.version}</h4><span class="pill ${escape(statusClass)}">${escape(statusLabel)}</span></div><p class="muted small">Sendt ${date(submission.createdAt, { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>${submission.caption ? `<p>${escape(submission.caption)}</p>` : ''}${submission.link ? `<p><a href="${escape(submission.link)}" target="_blank" rel="noopener noreferrer">Se lenke fra ambassadøren ${icon('arrow')}</a></p>` : ''}<div class="submission-media">${(submission.files || []).map((file) => {
+    const src = `/api/submissions/${encodeURIComponent(submission.id)}/files/${encodeURIComponent(file.name)}`;
+    return file.type?.startsWith('video/')
+      ? `<video controls preload="metadata" src="${escape(src)}">Video kan ikke spilles av i denne nettleseren.</video>`
+      : `<a href="${escape(src)}" target="_blank" rel="noopener noreferrer"><img src="${escape(src)}" alt="Mediefil ${escape(file.displayName || file.name)}" loading="lazy"></a>`;
+    }).join('')}</div>${submission.feedback ? `<div class="submission-feedback"><strong>${submission.status === 'approved' ? 'Tilbakemelding' : 'Ønsker endringer'}</strong><p>${escape(submission.feedback)}</p><small>${escape(person(submission.reviewerId)?.name || 'Ølbrygging-teamet')}${submission.decidedAt ? ` · ${date(submission.decidedAt)}` : ''}</small></div>` : ''}${employee() && ticket.status === 'review' && submission.status === 'submitted' ? `<div class="review-actions"><label for="review-feedback-${escape(submission.id)}">Tilbakemelding <span class="muted small">(påkrevd ved ønske om endringer)</span></label><textarea id="review-feedback-${escape(submission.id)}" maxlength="2000" placeholder="Skriv konkrete råd til ambassadøren"></textarea><div class="modal-actions"><button class="secondary" data-content-decision="changes_requested" data-submission-id="${escape(submission.id)}">Be om endringer</button><button class="primary" data-content-decision="approved" data-submission-id="${escape(submission.id)}">Godkjenn innhold ${icon('check')}</button></div></div>` : ''}</article>`;
+  }).join('');
+  return `<section class="conversation content-panel"><h3>Innhold og vurdering</h3>${history || '<p class="muted">Ingen innholdsversjoner er sendt inn ennå.</p>'}${canSubmit ? `<form id="content-form" class="content-form" data-ticket-id="${escape(ticket.id)}"><h4>${latest ? 'Send inn ny versjon' : 'Send innhold til vurdering'}</h4><p>Last opp bilder eller video. Opptil 5 filer, 20 MB per fil og 30 MB totalt.</p><div class="field"><label for="content-files">Bilder eller videoer</label><input id="content-files" name="files" type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm" multiple required><small>JPEG, PNG, WebP, MP4 eller WebM.</small></div><div class="field"><label for="content-caption">Bildetekst eller kommentar (valgfritt)</label><textarea id="content-caption" name="caption" maxlength="1500"></textarea></div><div class="field"><label for="content-link">Lenke til utkast (valgfritt)</label><input id="content-link" name="link" type="url" maxlength="2000" placeholder="https://…"></div><p class="error" role="alert"></p><button class="primary" type="submit">Send til vurdering ${icon('arrow')}</button></form>` : ''}${ticket.publicationUrl ? `<div class="publication-link"><strong>Publisert innlegg</strong><a href="${escape(ticket.publicationUrl)}" target="_blank" rel="noopener noreferrer">${escape(ticket.publicationUrl)} ${icon('arrow')}</a></div>` : ''}${canPublish ? `<form id="publication-form" class="publication-form" data-ticket-id="${escape(ticket.id)}"><h4>Registrer publiseringen</h4><p>Legg inn lenken til innlegget etter at det er publisert. Oppgaven kan ikke lukkes før lenken er registrert.</p><div class="field"><label for="publication-url">Lenke til publisert innlegg</label><input id="publication-url" name="url" type="url" required maxlength="2000" value="${escape(ticket.publicationUrl || '')}" placeholder="https://…"></div><p class="error" role="alert"></p><button class="primary" type="submit">Lagre publiseringslenke ${icon('check')}</button></form>` : ''}</section>`;
 }
 
 function ticketDetail(id, preserveDraft = '') {
   const ticket = state.tickets.find((item) => item.id === id);
   if (!ticket) return;
+  const isOffer = ticket.status === 'available' && !ticket.ambassadorId;
   modalTicketId = id;
   const contact = person(employee() ? ticket.ambassadorId : ticket.assigneeId);
-  const allowedStatuses = employee() ? Object.keys(statuses) : [...new Set([ticket.status, ...(ticket.status === 'approved' ? ['in_progress'] : ticket.status === 'in_progress' ? ['review'] : [])])];
-  const subject = `Re: [Ølbrygging #${ticket.number}] ${ticket.subject}`;
-  const emailBody = `Hei ${contact?.name?.split(' ')[0] || ''},\n\nAngående samarbeidet «${ticket.subject}» (#${ticket.number}):\n\n`;
+  const latestSubmission = ticket.submissions?.at(-1);
+  const canClose = latestSubmission?.status === 'approved' && Boolean(ticket.publicationUrl);
+  const pendingReview = ticket.status === 'review' && latestSubmission?.status === 'submitted';
+  const allowedStatuses = employee() ? (isOffer ? ['available', 'declined'] : pendingReview ? [ticket.status]
+    : Object.keys(statuses).filter((status) => (status !== 'review' || ticket.status === 'review')
+      && (status !== 'completed' || canClose || ticket.status === 'completed')))
+    : [...new Set([ticket.status, ...(ticket.status === 'approved' ? ['in_progress'] : [])])];
+  const displayNumber = ticketNumber(ticket);
+  const subject = `Re: [Ølbrygging #${displayNumber}] ${ticket.subject}`;
+  const emailBody = `Hei ${contact?.name?.split(' ')[0] || ''},\n\nAngående samarbeidet «${ticket.subject}» (#${displayNumber}):\n\n`;
   const mailto = `mailto:${encodeURIComponent(contact?.email || '')}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(emailBody)}`;
-  showModal(`${modalHead(escape(ticket.subject), `SAMARBEID #${escape(ticket.number)} · ${escape(ticket.channel)}`)}
-    <div class="drawer-scroll"><div class="ticket-meta"><div><label for="ticket-status">Status</label><select id="ticket-status" data-update="status" ${allowedStatuses.length === 1 ? 'disabled' : ''}>${allowedStatuses.map((status) => `<option value="${status}" ${ticket.status === status ? 'selected' : ''}>${statuses[status]}</option>`).join('')}</select></div><div><label for="ticket-assignee">Kontaktperson</label>${employee() ? `<select id="ticket-assignee" data-update="assigneeId">${state.users.filter((user) => user.role === 'employee').map((user) => `<option value="${escape(user.id)}" ${ticket.assigneeId === user.id ? 'selected' : ''}>${escape(user.name)}</option>`).join('')}</select>` : `<p>${escape(person(ticket.assigneeId)?.name || 'Ikke tildelt')}</p>`}</div><div><label for="ticket-due">Publiseringsfrist</label>${employee() ? `<input id="ticket-due" type="date" data-update="dueDate" value="${escape(ticket.dueDate?.slice(0, 10) || '')}">` : `<p>${date(ticket.dueDate, { day: 'numeric', month: 'long', year: 'numeric' })}</p>`}</div></div>
-    <div class="conversation"><h3>Om samarbeidet ${pill(ticket.status)}</h3><div class="request-product"><div class="mini-product">${productVisual(ticketProduct(ticket))}</div><div><h3>${escape(ticketProduct(ticket)?.name || 'Produkt')}</h3><p>${escape(person(ticket.ambassadorId)?.name)} · ${escape(ticket.channel)}${ticket.productSnapshot?.price !== null && ticket.productSnapshot?.price !== undefined ? ` · ${price(ticket.productSnapshot.price)} ${escape(ticket.productSnapshot.currency || 'NOK')}` : ''}</p>${productLink(ticket.productUrl) ? `<a class="ticket-product-link" href="${escape(productLink(ticket.productUrl))}" target="_blank" rel="noopener noreferrer">Se produktet i nettbutikken ${icon('arrow')}</a>` : ''}</div></div>${ticket.productSnapshot?.description ? `<p class="ticket-description">${escape(ticket.productSnapshot.description)}</p>` : ''}<p class="ticket-description">${escape(ticket.description)}</p></div>
-    <section class="conversation"><h3>Samtalen <span>${ticket.messages.length} meldinger</span></h3><div id="message-list">${ticket.messages.map((message) => {
+  const offerPanel = employee()
+    ? `<div class="task-accept-panel"><p>Oppgaven er publisert uten ambassadør eller publiseringsplattform. Ambassadørene kan akseptere den fram til ${date(ticket.acceptBy)}.</p></div>`
+    : `<div class="task-accept-panel"><p>Ingen ambassadør er tildelt ennå. Aksepter oppgaven innen fristen for å ta den på deg. Publiseringsplattformen velger du etterpå.</p><button class="primary" type="button" data-action="accept-task" data-ticket-id="${escape(id)}">Aksepter oppgaven ${icon('arrow')}</button></div>`;
+  showModal(`${modalHead(escape(ticket.subject), `OPPGAVE #${escape(displayNumber)}${ticket.channel ? ` · ${escape(ticket.channel)}` : ''}`)}
+    <div class="drawer-scroll">${isOffer ? `<div class="task-deadlines"><div><small>Frist for å melde interesse</small><strong>${date(ticket.acceptBy, { day: 'numeric', month: 'long', year: 'numeric' })}</strong></div><div><small>Publiseringsfrist</small><strong>${date(ticket.dueDate, { day: 'numeric', month: 'long', year: 'numeric' })}</strong></div></div>` : `<div class="ticket-meta"><div><label for="ticket-status">Status</label><select id="ticket-status" data-update="status" ${allowedStatuses.length === 1 ? 'disabled' : ''}>${allowedStatuses.map((status) => `<option value="${status}" ${ticket.status === status ? 'selected' : ''}>${statuses[status]}</option>`).join('')}</select></div><div><label for="ticket-assignee">Kontaktperson</label>${employee() ? `<select id="ticket-assignee" data-update="assigneeId">${state.users.filter((user) => user.role === 'employee').map((user) => `<option value="${escape(user.id)}" ${ticket.assigneeId === user.id ? 'selected' : ''}>${escape(user.name)}</option>`).join('')}</select>` : `<p>${escape(person(ticket.assigneeId)?.name || 'Ikke tildelt')}</p>`}</div><div><label for="ticket-due">Publiseringsfrist</label>${employee() ? `<input id="ticket-due" type="date" data-update="dueDate" value="${escape(ticket.dueDate?.slice(0, 10) || '')}">` : `<p>${date(ticket.dueDate, { day: 'numeric', month: 'long', year: 'numeric' })}</p>`}</div>${!employee() && !ticket.channel ? `<div><label for="ticket-channel">Publiseringskanal</label><select id="ticket-channel" data-update="channel"><option value="">Velg etter ønske</option>${['Instagram', 'TikTok', 'YouTube', 'Blogg', 'Annet'].map((channel) => `<option value="${channel}">${channel}</option>`).join('')}</select></div>` : ticket.channel ? `<div><label>Publiseringskanal</label><p>${escape(ticket.channel)}</p></div>` : ''}</div>`}
+    <div class="conversation"><h3>Om oppgaven ${pill(ticket.status)}</h3><div class="request-product"><div class="mini-product">${productVisual(ticketProduct(ticket))}</div><div><h3>${escape(ticketProduct(ticket)?.name || 'Produkt')}</h3><p>${escape(ticket.ambassadorId ? person(ticket.ambassadorId)?.name : 'Åpen for ambassadører')}${ticket.channel ? ` · ${escape(ticket.channel)}` : ''}${ticket.productSnapshot?.price !== null && ticket.productSnapshot?.price !== undefined ? ` · ${price(ticket.productSnapshot.price)} ${escape(ticket.productSnapshot.currency || 'NOK')}` : ''}</p>${productLink(ticket.productUrl) ? `<a class="ticket-product-link" href="${escape(productLink(ticket.productUrl))}" target="_blank" rel="noopener noreferrer">Se produktet i nettbutikken ${icon('arrow')}</a>` : ''}</div></div>${ticket.productSnapshot?.description ? `<p class="ticket-description">${escape(ticket.productSnapshot.description)}</p>` : ''}<p class="ticket-description">${escape(ticket.description)}</p></div>
+    ${contentPanel(ticket)}<section class="conversation"><h3>Samtalen <span>${ticket.messages.length} meldinger</span></h3><div id="message-list">${ticket.messages.map((message) => {
       const author = person(message.authorId);
       return `<article class="message ${message.authorId === state.user.id ? 'own' : ''}">${avatar(author, author?.role === 'employee' ? 'green' : '')}<div class="message-content"><div class="message-label"><strong>${escape(author?.name || 'Ølbrygging-teamet')}</strong><time datetime="${escape(message.createdAt)}">${date(message.createdAt, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</time></div><div class="bubble">${escape(message.body)}</div>${message.emailStatus === 'sent' ? '<span class="email-state">Også sendt på e-post</span>' : message.emailStatus === 'failed' ? '<span class="email-state">Lagret i portalen · E-post kunne ikke sendes</span>' : ''}</div></article>`;
     }).join('') || empty('Start samtalen. Kontaktpersonen din ser meldingen her.')}</div></section></div>
-    <form id="message-form" class="composer" data-ticket-id="${escape(id)}"><label class="sr-only" for="message-body">Skriv en melding</label><textarea id="message-body" name="body" required maxlength="5000" placeholder="Skriv en melding til ${escape(contact?.name?.split(' ')[0] || 'kontaktpersonen din')} …">${escape(preserveDraft)}</textarea>${state.emailConfigured ? '<label class="check-label"><input type="checkbox" name="sendEmail"> Send også en e-postvarsling</label>' : ''}<p class="error" role="alert"></p><div class="composer-actions"><a class="email-link" href="${escape(mailto)}">${icon('mail')} Åpne e-postutkast</a><button class="primary" type="submit">Send melding ${icon('send')}</button></div><p class="email-hint">${state.emailConfigured ? 'E-postvarsler sendes til kontaktpersonen. Svar i portalen for å holde samtalen samlet.' : 'E-posttjeneste er ikke tilkoblet. Utkast åpnes i e-postappen din.'} E-postsvar synkroniseres ikke til portalen.</p></form>`, true);
+    ${isOffer ? offerPanel : `<form id="message-form" class="composer" data-ticket-id="${escape(id)}"><label class="sr-only" for="message-body">Skriv en melding</label><textarea id="message-body" name="body" required maxlength="5000" placeholder="Skriv en melding til ${escape(contact?.name?.split(' ')[0] || 'kontaktpersonen din')} …">${escape(preserveDraft)}</textarea>${state.emailConfigured ? '<label class="check-label"><input type="checkbox" name="sendEmail"> Send også en e-postvarsling</label>' : ''}<p class="error" role="alert"></p><div class="composer-actions"><a class="email-link" href="${escape(mailto)}">${icon('mail')} Åpne e-postutkast</a><button class="primary" type="submit">Send melding ${icon('send')}</button></div><p class="email-hint">${state.emailConfigured ? 'E-postvarsler sendes til kontaktpersonen. Svar i portalen for å holde samtalen samlet.' : 'E-posttjeneste er ikke tilkoblet. Utkast åpnes i e-postappen din.'} E-postsvar synkroniseres ikke til portalen.</p></form>`}`, true);
+}
+
+function refreshTicketDetail(id, version) {
+  if (version !== authVersion || modalTicketId !== id) return;
+  const composer = modalRoot.querySelector('#message-body');
+  const draft = composer?.value || '';
+  const selected = modalRoot.querySelector('[name=sendEmail]')?.checked;
+  const focused = Boolean(composer) && document.activeElement === composer;
+  const selection = [composer?.selectionStart, composer?.selectionEnd];
+  ticketDetail(id, draft);
+  const checkbox = modalRoot.querySelector('[name=sendEmail]');
+  if (checkbox) checkbox.checked = selected;
+  if (focused) {
+    const newComposer = modalRoot.querySelector('#message-body');
+    newComposer.focus();
+    newComposer.setSelectionRange(...selection);
+  }
 }
 
 function help() {
   modalTicketId = null;
-  showModal(`${modalHead('Et godt samarbeid, steg for steg.')}<div class="modal-body"><ol class="help-list"><li><strong>Finn noe du vil dele.</strong> Utforsk produktkatalogen og send en forespørsel med idé, kanal og ønsket publiseringsdato.</li><li><strong>Bli enige med teamet.</strong> En ansatt i Ølbrygging følger opp og godkjenner samarbeidet. Kontaktpersonen finner du på samarbeidet.</li><li><strong>Del bryggeglede.</strong> Start et godkjent samarbeid ved å endre status til «Pågår». Send innhold og lenker i samtalen og velg «Til gjennomgang» når du er klar.</li><li><strong>Hold praten i gang.</strong> Meldinger lagres på samarbeidet. E-postutkast kan åpnes i e-postappen. Med konfigurert e-posttjeneste kan du også sende varsler fra portalen.</li></ol><p>Dette er en lokal demo med eksempelprodukter og demokontoer. E-postsvar importeres ikke automatisk. Ikke bruk virkelige personopplysninger.</p><button class="primary" data-action="close">Det høres bra ut ${icon('check')}</button></div>`);
+  showModal(`${modalHead('Et godt samarbeid, steg for steg.')}<div class="modal-body"><ol class="help-list"><li><strong>Send en idé.</strong> Lim inn lenken til produktet du vil dele, hent produktinformasjonen og fortell om idé, kanal og ønsket publiseringsdato.</li><li><strong>Bli enige med teamet.</strong> En ansatt i Ølbrygging følger opp og godkjenner samarbeidet. Kontaktpersonen finner du på samarbeidet.</li><li><strong>Send innhold til vurdering.</strong> Start et godkjent samarbeid ved å endre status til «Pågår». Last opp bilder eller videoer på oppgaven. Teamet godkjenner innholdet eller ber om endringer med tilbakemelding.</li><li><strong>Publiser og avslutt.</strong> Når innholdet er godkjent og publisert, legg inn lenken til innlegget på oppgaven. Teamet kan lukke samarbeidet etter at lenken er registrert.</li><li><strong>Hold praten i gang.</strong> Meldinger lagres på samarbeidet. E-postutkast kan åpnes i e-postappen. E-postsvar importeres ikke automatisk.</li></ol><p>${state.demoMode ? 'Dette er en lokal demo med fiktive eksempeldata og demokontoer. Ikke bruk virkelige personopplysninger.' : 'Kontakt administrator hvis du trenger hjelp med kontoen din.'}</p><button class="primary" data-action="close">Det høres bra ut ${icon('check')}</button></div>`);
 }
 
-function navigate(page) {
+async function navigate(page) {
+  const version = authVersion;
   state.page = page;
   state.filter = 'Alle';
   render();
+  if (page === 'applications' && canReviewApplications()) {
+    try {
+      const { applications } = await api('/ambassador-applications');
+      if (version !== authVersion || !canReviewApplications()) return;
+      state.applications = applications;
+      state.applicationsLoaded = true;
+      state.applicationsError = '';
+      if (state.page === page) render();
+    } catch (error) {
+      if (version === authVersion && canReviewApplications()) {
+        state.applicationsError = error.message;
+        if (state.page === page) render();
+        toast(error.message);
+      }
+    }
+  }
   window.scrollTo(0, 0);
 }
 
@@ -301,23 +553,157 @@ document.addEventListener('click', async (event) => {
     if (draft) {
       const href = new URL(button.href);
       const ticket = state.tickets.find((item) => item.id === modalTicketId);
-      href.searchParams.set('body', `Angående samarbeidet «${ticket?.subject}» (#${ticket?.number}):\n\n${draft}`);
+      href.searchParams.set('body', `Angående samarbeidet «${ticket?.subject}» (#${ticket ? ticketNumber(ticket) : ''}):\n\n${draft}`);
       button.href = href.href;
     }
     return;
   }
-  if (button.dataset.demo) return login(`${button.dataset.demo}@olbrygging.example`, 'BrewTogether!2026', button);
-  if (button.dataset.page) return navigate(button.dataset.page);
+  if (button.dataset.demo && state.demoMode) return login(`${button.dataset.demo}@olbrygging.example`, 'BrewTogether!2026', button);
+  if (button.dataset.page) {
+    if (modalRoot.hasChildNodes()) closeModal();
+    return navigate(button.dataset.page);
+  }
   if (button.dataset.filter) {
     state.filter = button.dataset.filter;
     document.querySelector('#main-content').innerHTML = pageContent();
     return;
   }
-  if (button.dataset.product) return requestProduct(button.dataset.product);
   if (button.dataset.ticket) return ticketDetail(button.dataset.ticket);
+  if (button.dataset.articleEdit) {
+    state.editArticle = button.dataset.articleEdit;
+    return navigate('knowledge');
+  }
+  if (button.dataset.action === 'new-article') {
+    state.editArticle = '';
+    return render();
+  }
+  if (button.dataset.action === 'cancel-article') {
+    state.editArticle = null;
+    return render();
+  }
+  if (button.dataset.reportDecision) {
+    try {
+      await api(`/damage-reports/${encodeURIComponent(button.dataset.reportId)}`, { method: 'PATCH', body: { status: button.dataset.reportDecision } });
+      await loadWorkspace();
+      toast('Skademeldingen er behandlet.');
+    } catch (error) { toast(error.message); }
+    return;
+  }
+  if (button.dataset.applicationDecision) {
+    if (!canReviewApplications() || mutating) return;
+    const id = button.dataset.applicationId;
+    const decision = button.dataset.applicationDecision;
+    const version = authVersion;
+    mutating = true;
+    button.disabled = true;
+    try {
+      const { application } = await api(`/ambassador-applications/${encodeURIComponent(id)}/decision`, {
+        method: 'POST', body: { decision },
+      });
+      if (version !== authVersion || !canReviewApplications()) return;
+      const updated = await api('/ambassador-applications');
+      if (version !== authVersion || !canReviewApplications()) return;
+      state.applications = updated.applications;
+      state.applicationsLoaded = true;
+      state.applicationsError = '';
+      render();
+      toast(decision === 'approved'
+        ? application.invitationStatus === 'sent' ? 'Søknaden er godkjent, og invitasjonen er sendt.' : 'Kontoen er opprettet, men e-posten kunne ikke sendes. Du kan prøve igjen.'
+        : 'Søknaden er avslått.');
+    } catch (error) { if (version === authVersion) toast(error.message); }
+    finally { mutating = false; button.disabled = false; }
+    return;
+  }
+  if (button.dataset.applicationRetry) {
+    if (!canReviewApplications() || mutating) return;
+    const id = button.dataset.applicationRetry;
+    const version = authVersion;
+    mutating = true;
+    button.disabled = true;
+    try {
+      const { application } = await api(`/ambassador-applications/${encodeURIComponent(id)}/retry-invitation`, { method: 'POST', body: {} });
+      if (version !== authVersion || !canReviewApplications()) return;
+      const updated = await api('/ambassador-applications');
+      if (version !== authVersion || !canReviewApplications()) return;
+      state.applications = updated.applications;
+      state.applicationsLoaded = true;
+      state.applicationsError = '';
+      render();
+      toast(application.invitationStatus === 'sent' ? 'Invitasjonen er sendt på nytt.' : 'E-posten kunne ikke sendes. Kontroller e-postkonfigurasjonen og prøv igjen.');
+    } catch (error) { if (version === authVersion) toast(error.message); }
+    finally { mutating = false; button.disabled = false; }
+    return;
+  }
+  if (button.dataset.action === 'refresh-applications') {
+    if (!canReviewApplications()) return;
+    const version = authVersion;
+    try {
+      const { applications } = await api('/ambassador-applications');
+      if (version !== authVersion || !canReviewApplications()) return;
+      state.applications = applications;
+      state.applicationsLoaded = true;
+      state.applicationsError = '';
+      render();
+    } catch (error) {
+      if (version === authVersion && canReviewApplications()) {
+        state.applicationsError = error.message;
+        render();
+        toast(error.message);
+      }
+    }
+    return;
+  }
+  if (button.dataset.contentDecision) {
+    const submissionId = button.dataset.submissionId;
+    const ticketId = modalTicketId;
+    const version = authVersion;
+    const feedback = modalRoot.querySelector(`#review-feedback-${CSS.escape(submissionId)}`)?.value.trim() || '';
+    if (button.dataset.contentDecision === 'changes_requested' && !feedback) {
+      toast('Skriv en tilbakemelding før du ber om endringer.');
+      modalRoot.querySelector(`#review-feedback-${CSS.escape(submissionId)}`)?.focus();
+      return;
+    }
+    if (mutating || !ticketId) return;
+    mutating = true;
+    button.disabled = true;
+    try {
+      await api(`/submissions/${encodeURIComponent(submissionId)}/decision`, { method: 'POST', body: { decision: button.dataset.contentDecision, feedback } });
+      if (version !== authVersion || !state.user) return;
+      await loadWorkspace();
+      if (version !== authVersion || !state.user) return;
+      if (button.isConnected) refreshTicketDetail(ticketId, version);
+      toast(button.dataset.contentDecision === 'approved' ? 'Innholdet er godkjent.' : 'Tilbakemeldingen er sendt til ambassadøren.');
+    } catch (error) { if (version === authVersion) toast(error.message); }
+    finally { mutating = false; button.disabled = false; }
+    return;
+  }
   if (button.dataset.action === 'close') return closeModal();
+  if (button.dataset.action === 'create-task') return createTask();
+  if (button.dataset.action === 'accept-task') {
+    const id = button.dataset.ticketId;
+    const version = authVersion;
+    if (mutating) return;
+    mutating = true;
+    button.disabled = true;
+    try {
+      await api(`/tickets/${encodeURIComponent(id)}/accept`, { method: 'POST', body: {} });
+      if (version !== authVersion || !state.user) return;
+      await loadWorkspace();
+      if (version !== authVersion || !state.user) return;
+      const accepted = state.tickets.find((ticket) => ticket.id === id);
+      if (accepted) ticketDetail(id);
+      toast('Du har fått oppgaven. Velg publiseringskanal når du er klar.');
+    } catch (error) {
+      button.disabled = false;
+      if (version === authVersion) toast(error.message);
+    } finally { mutating = false; }
+    return;
+  }
+  if (button.dataset.action === 'more-menu') return moreMenu();
+  if (button.dataset.action === 'new-promotion') return requestPromotion();
+  if (button.dataset.action === 'apply-ambassador') return applyAmbassador();
   if (button.dataset.action === 'preview-product') {
-    const form = button.closest('#request-form');
+    const form = button.closest('#request-form, #task-form');
     const field = form?.querySelector('[name=productUrl]');
     if (!field?.value) return field?.reportValidity();
     const value = field.value;
@@ -325,7 +711,12 @@ document.addEventListener('click', async (event) => {
     button.disabled = true;
     try {
       const { product: details } = await api('/products/preview', { method: 'POST', body: { url: value } });
-      if (form.isConnected && field.value === value) productPreview(details);
+      if (form.isConnected && field.value === value) {
+        productPreview(details);
+        form.dataset.previewUrl = value;
+        const subject = form.querySelector('[name=subject]');
+        if (subject && !subject.value.trim()) subject.value = details.name.slice(0, 150);
+      }
     } catch (error) {
       if (field.value === value && preview) preview.textContent = error.message;
     } finally {
@@ -340,6 +731,7 @@ document.addEventListener('click', async (event) => {
   }
   if (button.dataset.action === 'logout') {
     authVersion++;
+    clearApplications();
     try {
       await api('/logout', { method: 'POST' });
       state.user = null;
@@ -353,31 +745,155 @@ document.addEventListener('click', async (event) => {
 
 document.addEventListener('submit', async (event) => {
   const form = event.target;
-  if (!['login-form', 'request-form', 'message-form'].includes(form.id)) return;
+  if (!['login-form', 'ambassador-application-form', 'ambassador-setup-form', 'task-form', 'request-form', 'message-form', 'profile-form', 'article-form', 'damage-form', 'admin-create-form', 'settings-form', 'content-form', 'publication-form'].includes(form.id) && !form.matches('.admin-user-form')) return;
   event.preventDefault();
   const fields = new FormData(form);
   const button = form.querySelector('[type=submit]');
   if (form.id === 'login-form') return login(fields.get('email'), fields.get('password'), button);
+  if (form.id === 'ambassador-application-form') return submitAmbassadorApplication(form, fields, button);
+  if (form.id === 'ambassador-setup-form') {
+    if (mutating) return;
+    const password = fields.get('password');
+    const error = form.querySelector('.error');
+    if (password !== fields.get('confirmation')) {
+      error.textContent = 'Passordene er ikke like.';
+      form.querySelector('[name=confirmation]').focus();
+      return;
+    }
+    mutating = true;
+    button.disabled = true;
+    error.textContent = '';
+    try {
+      await api('/ambassador-account/setup', { method: 'POST', body: { token: state.setupToken, password } });
+      state.setupToken = '';
+      renderLogin('Passordet er opprettet. Logg inn med den nye kontoen din.');
+    } catch (failure) { if (form.isConnected) error.textContent = failure.message; }
+    finally { mutating = false; button.disabled = false; }
+    return;
+  }
+  if (form.id === 'task-form') {
+    if (form.dataset.previewUrl !== fields.get('productUrl')) {
+      const error = form.querySelector('.error');
+      error.textContent = 'Hent og kontroller produktinformasjonen fra lenken før du publiserer.';
+      form.querySelector('[name=productUrl]').focus();
+      return;
+    }
+    if (fields.get('acceptBy') > fields.get('dueDate')) {
+      const error = form.querySelector('.error');
+      error.textContent = 'Publiseringsfristen må være samme dag eller etter fristen for å melde interesse.';
+      form.querySelector('[name=dueDate]').focus();
+      return;
+    }
+    if (mutating) return;
+    const version = authVersion;
+    mutating = true;
+    button.disabled = true;
+    const error = form.querySelector('.error');
+    error.textContent = '';
+    try {
+      await api('/tasks', { method: 'POST', body: Object.fromEntries(fields) });
+      if (version !== authVersion || !form.isConnected) return;
+      closeModal();
+      await loadWorkspace();
+      toast('Oppgaven er publisert for ambassadørene.');
+    } catch (failure) {
+      if (form.isConnected) error.textContent = failure.message;
+      else toast(failure.message);
+    } finally {
+      mutating = false;
+      button.disabled = false;
+    }
+    return;
+  }
+  if (form.id === 'settings-form') {
+    const settings = { theme: fields.get('theme'), compact: fields.has('compact'), notifications: fields.has('notifications') };
+    localStorage.setItem(`settings-${state.user.id}`, JSON.stringify(settings));
+    render();
+    toast('Innstillingene er lagret.');
+    return;
+  }
+  if (mutating) return;
   mutating = true;
   button.disabled = true;
-  form.querySelector('.error').textContent = '';
+  const requestVersion = authVersion;
+  const error = form.querySelector('.error');
+  if (error) error.textContent = '';
   try {
     if (form.id === 'request-form') {
-      const body = { ...Object.fromEntries(fields), productId: form.dataset.productId };
-      const { ticket } = await api('/tickets', { method: 'POST', body });
-      await loadWorkspace();
+      if (form.dataset.previewUrl !== fields.get('productUrl')) {
+        const requestError = form.querySelector('.error');
+        requestError.textContent = 'Hent produktinformasjonen fra lenken før du sender forespørselen.';
+        form.querySelector('[name=productUrl]').focus();
+        button.disabled = false;
+        mutating = false;
+        return;
+      }
+      const body = Object.fromEntries(fields);
+      const { ticket, promotionCount = 1 } = await api('/tickets', { method: 'POST', body });
+      await loadWorkspace(form);
       ticketDetail(ticket.id);
-      toast('Forespørselen er sendt. Nå begynner et godt samarbeid!');
-    } else {
+      toast(promotionCount > 1
+        ? `${promotionCount} separate forespørsler er opprettet (#${ticket.promotionBase}-1–${ticket.promotionBase}-${promotionCount}).`
+        : 'Forespørselen er sendt. Nå begynner et godt samarbeid!');
+    } else if (form.id === 'message-form') {
       const { message } = await api(`/tickets/${encodeURIComponent(form.dataset.ticketId)}/messages`, { method: 'POST', body: { body: fields.get('body'), sendEmail: fields.has('sendEmail') } });
-      await loadWorkspace();
+      await loadWorkspace(form);
       ticketDetail(form.dataset.ticketId);
       modalRoot.querySelector('.drawer-scroll').scrollTop = modalRoot.querySelector('.drawer-scroll').scrollHeight;
       modalRoot.querySelector('#message-body').focus();
       if (message.emailStatus === 'failed') toast('Meldingen er lagret, men e-postvarslingen kunne ikke sendes.');
+    } else if (form.id === 'content-form') {
+      const ticketId = form.dataset.ticketId;
+      const version = authVersion;
+      await apiForm(`/tickets/${encodeURIComponent(ticketId)}/submissions`, fields);
+      if (version !== authVersion || !state.user) return;
+      await loadWorkspace(form);
+      if (version !== authVersion || !state.user) return;
+      if (form.isConnected) refreshTicketDetail(ticketId, version);
+      toast('Innholdet er sendt til vurdering.');
+    } else if (form.id === 'publication-form') {
+      const ticketId = form.dataset.ticketId;
+      const version = authVersion;
+      await api(`/tickets/${encodeURIComponent(ticketId)}/publication`, { method: 'PATCH', body: { url: fields.get('url') } });
+      if (version !== authVersion || !state.user) return;
+      await loadWorkspace(form);
+      if (version !== authVersion || !state.user) return;
+      if (form.isConnected) refreshTicketDetail(ticketId, version);
+      toast('Publiseringslenken er lagret.');
+    } else if (form.id === 'profile-form') {
+      const body = Object.fromEntries(fields);
+      const path = employee() ? `/users/${encodeURIComponent(form.dataset.userId)}` : '/profile';
+      await api(path, { method: 'PATCH', body });
+      await loadWorkspace(form);
+      toast('Profilen er oppdatert.');
+    } else if (form.id === 'article-form') {
+      const path = form.dataset.articleId ? `/articles/${encodeURIComponent(form.dataset.articleId)}` : '/articles';
+      await api(path, { method: form.dataset.articleId ? 'PATCH' : 'POST', body: Object.fromEntries(fields) });
+      state.editArticle = null;
+      await loadWorkspace(form);
+      toast('Artikkelen er lagret.');
+    } else if (form.id === 'damage-form') {
+      const body = Object.fromEntries(fields);
+      if (!body.productId && body.ticketId) body.productId = state.tickets.find((ticket) => ticket.id === body.ticketId)?.productId || '';
+      if (!body.productId) delete body.productId;
+      if (!body.ticketId) delete body.ticketId;
+      await api('/damage-reports', { method: 'POST', body });
+      await loadWorkspace(form);
+      toast('Skademeldingen er sendt.');
+    } else if (form.id === 'admin-create-form') {
+      await api('/users', { method: 'POST', body: Object.fromEntries(fields) });
+      await loadWorkspace(form);
+      toast('Brukeren er opprettet.');
+    } else {
+      const body = { active: fields.has('active') };
+      if (fields.has('role')) body.role = fields.get('role');
+      await api(`/users/${encodeURIComponent(form.dataset.userId)}`, { method: 'PATCH', body });
+      await loadWorkspace(form);
+      toast('Brukertilgangen er oppdatert.');
     }
   } catch (error) {
-    if (form.isConnected) form.querySelector('.error').textContent = error.message;
+    if (['content-form', 'publication-form'].includes(form.id) && requestVersion !== authVersion) return;
+    if (form.isConnected && form.querySelector('.error')) form.querySelector('.error').textContent = error.message;
     else toast(error.message);
   } finally {
     mutating = false;
@@ -386,6 +902,7 @@ document.addEventListener('submit', async (event) => {
 });
 
 document.addEventListener('input', (event) => {
+  if (event.target.form && event.target.form.id !== 'login-form') dirtyForms.add(event.target.form);
   if (event.target.id !== 'global-search') return;
   state.query = event.target.value;
   document.querySelector('#main-content').innerHTML = pageContent();
@@ -393,25 +910,19 @@ document.addEventListener('input', (event) => {
 
 document.addEventListener('change', async (event) => {
   const field = event.target;
+  if (field.form && field.form.id !== 'login-form') dirtyForms.add(field.form);
+  if (field.matches?.('[data-profile-select]')) {
+    state.profileId = field.value;
+    return document.querySelector('#main-content').innerHTML = pageContent();
+  }
+  if (field.matches?.('[data-owner-filter]')) {
+    state.ownerFilter = field.value;
+    return document.querySelector('#main-content').innerHTML = pageContent();
+  }
   if (!field.dataset.update || !modalTicketId) return;
   const id = modalTicketId;
   const version = authVersion;
-  const refreshDetail = () => {
-    if (version !== authVersion || modalTicketId !== id) return;
-    const composer = modalRoot.querySelector('#message-body');
-    const draft = composer?.value || '';
-    const selected = modalRoot.querySelector('[name=sendEmail]')?.checked;
-    const focused = document.activeElement === composer;
-    const selection = [composer?.selectionStart, composer?.selectionEnd];
-    ticketDetail(id, draft);
-    const checkbox = modalRoot.querySelector('[name=sendEmail]');
-    if (checkbox) checkbox.checked = selected;
-    if (focused) {
-      const newComposer = modalRoot.querySelector('#message-body');
-      newComposer.focus();
-      newComposer.setSelectionRange(...selection);
-    }
-  };
+  const refreshDetail = () => refreshTicketDetail(id, version);
   mutating = true;
   field.disabled = true;
   try {
@@ -441,12 +952,24 @@ document.addEventListener('keydown', (event) => {
 
 async function start() {
   try {
+    if (typeof location !== 'undefined') {
+      const currentUrl = new URL(location.href);
+      const setupToken = currentUrl.searchParams.get('setup') || new URLSearchParams(currentUrl.hash.slice(1)).get('setup') || '';
+      if (/^[a-f0-9]{64}$/.test(setupToken)) {
+        state.setupToken = setupToken;
+        if (typeof history !== 'undefined') history.replaceState({}, '', location.pathname);
+        return renderAccountSetup();
+      }
+      if (setupToken) return renderLogin('Invitasjonslenken er ugyldig. Be administratoren om en ny invitasjon.');
+    }
+    const config = await api('/config');
+    state.demoMode = config.demoMode === true;
     const { user } = await api('/session');
     state.user = user;
     if (user) await loadWorkspace();
     else renderLogin();
   } catch {
-    app.innerHTML = `<main class="loading"><span class="brand-mark">ø</span><h1>Vi fikk ikke kontakt med portalen.</h1><p>Kontroller at serveren kjører, og prøv igjen.</p><button class="primary" data-action="retry">Prøv igjen</button></main>`;
+    app.innerHTML = `<main class="loading"><span class="brand-mark">ø</span><h1>Vi fikk ikke kontakt med portalen.</h1><p>Portalen krever nett for innlogging, samarbeid og meldinger. Kontroller nettforbindelsen og prøv igjen.</p><button class="primary" data-action="retry">Prøv igjen</button></main>`;
     app.querySelector('button').addEventListener('click', start, { once: true });
   }
 }
@@ -457,9 +980,11 @@ setInterval(async () => {
   const version = authVersion;
   try {
     const data = await api('/workspace');
-    if (version !== authVersion || !state.user || data.user.id !== state.user.id || mutating || JSON.stringify(data.tickets) === JSON.stringify(state.tickets)) return;
+    if (version !== authVersion || !state.user || data.user.id !== state.user.id || mutating
+      || ['user', 'tickets', 'articles', 'damageReports', 'users', 'products'].every((key) => JSON.stringify(data[key]) === JSON.stringify(state[key]))) return;
     const focused = document.activeElement;
-    if (modalTicketId && focused?.matches('select,input')) return;
+    if (focused?.matches('input,textarea,select,[contenteditable="true"]')
+      || [...document.querySelectorAll('form')].some((form) => dirtyForms.has(form))) return;
     const id = modalTicketId;
     const composer = modalRoot.querySelector('#message-body');
     const draft = composer?.value || '';
@@ -469,6 +994,7 @@ setInterval(async () => {
     const nearBottom = scroll && scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop < 80;
     const scrollTop = scroll?.scrollTop;
     Object.assign(state, data);
+    if (!canReviewApplications()) clearApplications();
     render();
     if (id) {
       ticketDetail(id, draft);
