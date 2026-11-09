@@ -27,6 +27,14 @@ npm run dev
 
 `npm run dev` starts PocketBase at **http://127.0.0.1:8090** and the portal at **http://127.0.0.1:3000**, applies the checked-in migrations automatically, waits for backend readiness, and stops both processes on Ctrl+C. Binary downloads require access to GitHub releases. The binary and database are ignored by Git. No public demo users are created in PocketBase.
 
+### One-command start with the example users
+
+```sh
+npm run start:prod
+```
+
+Seeds `data/workspace.json` from the demo data if it does not exist, imports the example `employee` and `ambassador` accounts into PocketBase (idempotent; existing accounts and the local `admin` are left out), and then runs `npm run dev` to start PocketBase and the portal. The imported example accounts use the shared demo password from the table below. Treat this as a local/staging convenience: for a real deployment create your own accounts (or use `--passwords-file`), set `NODE_ENV=production` and `COOKIE_SECURE=true`, and supervise the processes rather than running this launcher.
+
 Open the PocketBase dashboard at **http://127.0.0.1:8090/_/** and follow its first-run superuser setup link printed in the terminal. Alternatively, create a superuser using the native CLI through npm:
 
 ```sh
