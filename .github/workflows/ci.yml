@@ -1,4 +1,4 @@
-name: NodeJS with Webpack
+name: CI
 
 on:
   push:
@@ -7,14 +7,14 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
     permissions:
       contents: read
 
     strategy:
       matrix:
-        node-version: [24.x]
+        node-version: [22.x, 24.x]
 
     steps:
     - uses: actions/checkout@v4
@@ -28,4 +28,16 @@ jobs:
       run: |
         npm ci
         npm test
+        npm run test:integration
         npm run check
+
+  docker-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build container image
+      run: docker build -t olbrygging:ci .

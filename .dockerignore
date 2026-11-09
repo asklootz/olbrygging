@@ -1,0 +1,16 @@
+.git
+.github
+.idea
+node_modules
+data
+.test-data
+pb_data
+pb_logs
+.env
+.env.*
+pocketbase
+pocketbase.exe
+pocketbase.zip
+.pocketbase-version
+test
+*.md

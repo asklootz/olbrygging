@@ -195,3 +195,27 @@ The local JSON mode is a **single-process demonstration**. Do not expose its pub
 For deployment, run one PocketBase service with persistent storage; Node portal instances may connect to that service. Do not share its SQLite data directory between independent PocketBase processes. Use process/service supervision rather than the development launcher, keep PocketBase and its dashboard on a private network where possible, enforce HTTPS (`COOKIE_SECURE=true`, `NODE_ENV=production`), and configure `HOST` for your hosting environment. The reverse proxy must preserve the external Host header, and the browser Origin must match it.
 
 Before using real data, configure trusted account administration/recovery, gateway and PocketBase rate limits, backups, audit/retention policies, and real catalogue/email integrations. Protect superuser access. PocketBase is pre-1.0; review compatibility and security notes before upgrading the pinned native version.
+
+## Container and GitHub Actions
+
+The repository ships a single-container deployment (`Dockerfile`) that runs the pinned PocketBase 0.40.6 binary and the Node portal in one process: the container exposes only the portal port (3000), PocketBase stays on loopback inside the container, and its data lives in `PB_DATA_DIR` (mount a volume there). On first boot, `pb_migrations/1792401000_bootstrap_superuser.js` creates the superuser from `POCKETBASE_ADMIN_EMAIL` / `POCKETBASE_ADMIN_PASSWORD` when both are set; an existing data directory with a superuser is left untouched.
+
+GitHub Actions workflows (`.github/workflows/`):
+
+- **CI** (`ci.yml`): on every push and pull request to `main`, runs `npm test`, `npm run test:integration` (which downloads the pinned PocketBase 0.40.6 binary) and `npm run check` on Node 22 and 24, and builds the container image.
+- **Publish container image** (`container.yml`): on push to `main` (and manually via Actions), builds and pushes the image to `ghcr.io/asklootz/olbrygging` tagged `latest` and with the short commit SHA. For a private repository, allow package access under **Settings → General → Visibility, feature sets and limitations → Package visibility**.
+- **Publish via actions** (`publish.yml`): deploys the static `public/` app shell to GitHub Pages.
+
+Pull and run the published image:
+
+```sh
+docker pull ghcr.io/asklootz/olbrygging:latest
+docker run -d --name olbrygging --restart unless-stopped -p 3000:3000 \
+  -e POCKETBASE_ADMIN_EMAIL=<admin-email> \
+  -e POCKETBASE_ADMIN_PASSWORD=<admin-password> \
+  -v olbrygging-pb-data:/pb-data \
+  ghcr.io/asklootz/olbrygging:latest
+```
+
+Configure the remaining server environment (`RESEND_API_KEY`, `EMAIL_FROM`, `PUBLIC_URL`, ...) as container environment variables or a mounted secret file; the image defaults to `NODE_ENV=production` and `COOKIE_SECURE=true`, so serve it behind HTTPS.
+
