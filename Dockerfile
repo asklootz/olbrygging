@@ -2,7 +2,7 @@
 # The pinned PocketBase binary is a glibc build, so use a Debian-based image
 # (Alpine/musl will not run it). No npm runtime dependencies are needed; the
 # app code only uses Node built-ins.
-FROM node:22-bookworm-slim
+FROM node:26-bookworm-slim
 
 # Keep in sync with the --pb-version pin in package.json.
 ARG PB_VERSION=0.40.6
