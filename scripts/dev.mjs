@@ -7,7 +7,7 @@ import { createApp } from '../server.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
-const backendUrl = 'http://127.0.0.1:8090';
+const backendUrl = 'http://0.0.0.0:8090';
 if (process.env.POCKETBASE_URL && process.env.POCKETBASE_URL.replace(/\/$/, '') !== backendUrl) {
   throw new Error('npm run dev starts local PocketBase on port 8090. Use npm start for an external POCKETBASE_URL.');
 }
@@ -15,7 +15,7 @@ process.env.POCKETBASE_URL = backendUrl;
 
 const backend = spawn(process.execPath, [
   require.resolve('@fadlee/pocketbase-bin/bin/runner.js'),
-  '--pb-version', '0.40.6', 'serve', '--http=127.0.0.1:8090',
+  '--pb-version', '0.40.6', 'serve', '--http=0.0.0.0:8090',
   `--dir=${resolve(root, 'pb_data')}`,
   `--hooksDir=${resolve(root, 'pb_hooks')}`,
   `--migrationsDir=${resolve(root, 'pb_migrations')}`,
