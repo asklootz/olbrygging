@@ -12,7 +12,7 @@
     "start:prod": "node --env-file-if-exists=.env scripts/seed-demo.mjs && npm run pocketbase:import-users -- --demo-passwords --apply && npm run dev",
     "pocketbase:import-users": "node --env-file-if-exists=.env scripts/import-users.mjs",
     "pocketbase:superuser": "node --env-file-if-exists=.env scripts/superuser.mjs",
-    "pocketbase": "pocketbase --pb-version 0.40.6",
+    "pocketbase": "pocketbase",
     "pocketbase:install": "pocketbase --pb-version 0.40.6 --version",
     "pocketbase:start": "pocketbase --pb-version 0.40.6 serve --http=127.0.0.1:8090 --hooksDir=pb_hooks --migrationsDir=pb_migrations",
     "test:integration": "npm run pocketbase:install && node --test test/pocketbase-backend.test.mjs",
