@@ -1,0 +1,283 @@
+{
+  "version": 2,
+  "users": [
+    {
+      "id": "carsten",
+      "name": "Carsten",
+      "email": "admin@olbrygging.example",
+      "role": "admin",
+      "active": true,
+      "socialMedia": "",
+      "passwordHash": "c1bc73811fe4977defadb62556c0fe83:e8452f89ecbacc97624431e1a35606389f21d11ee9c765738c1312ba70edd970c774cc82be4ff6bee20d919ee235b13d82f55a57eed288a040c70a88a16b0a46"
+    },
+    {
+      "id": "nora",
+      "name": "Nora Berg",
+      "email": "employee@olbrygging.example",
+      "role": "employee",
+      "active": true,
+      "socialMedia": "",
+      "passwordHash": "dd9a3e8b961e3ef5d610789d169be2a3:30022295c5a210ac2f433c5d784f96013c880d2d36989e9c5fb785379b0bfe5de6dfe81a8ca6038cc163b0a74ffd1c41dcbce9d986c5fdfe7aae765c3b00403a"
+    },
+    {
+      "id": "marius",
+      "name": "Marius Dahl",
+      "email": "marius@olbrygging.example",
+      "role": "employee",
+      "active": true,
+      "socialMedia": "",
+      "passwordHash": "9ac3e3804df3282385b023289efa593b:a9225022960c4300513b4265160fe544315236fec42432fdbab2e67181e06e8c314f4977f1307ef15aa0443500975460234f6ef0add8c1e579c22115f846574e"
+    },
+    {
+      "id": "emil",
+      "name": "Emil Hansen",
+      "email": "ambassador@olbrygging.example",
+      "role": "ambassador",
+      "active": true,
+      "socialMedia": "",
+      "passwordHash": "6f47b180726a629d0376de9feb5d97d5:c39394b7f62c419015e6e5660dce14b242633971a1822b68a1b71f3e0ea5d9bfc821c4ac124f8fc6f57faf1a281bce40bfb22d0a39b8c58d50a933ac28bc4792"
+    },
+    {
+      "id": "sara",
+      "name": "Sara Lund",
+      "email": "sara@olbrygging.example",
+      "role": "ambassador",
+      "active": true,
+      "socialMedia": "",
+      "passwordHash": "d66764e4f82a51fc430e0aba13a7676c:b7cc2b62dc8955d79bf01c25b272723820fdd0563d18d52425e7610af375853aeb7ee4b1a0a432e90a72dc601f9d4839878d341cf084167d5680f1f7ab4c071e"
+    }
+  ],
+  "products": [
+    {
+      "id": "fjord-pale",
+      "name": "Fjordglød Pale Ale",
+      "category": "Ølsett",
+      "description": "Friskt allgrain-sett med sitrus, norsk bryggeglede og en gyllen avslutning. 20 liter.",
+      "price": 449,
+      "available": true
+    },
+    {
+      "id": "skog-ipa",
+      "name": "Skogbris IPA",
+      "category": "Ølsett",
+      "description": "Et aromatisk ølsett med tropiske toner og en tydelig, balansert bitterhet. 20 liter.",
+      "price": 529,
+      "available": true
+    },
+    {
+      "id": "kveld-pils",
+      "name": "Lys kveld Pilsner",
+      "category": "Ølsett",
+      "description": "Ren og lettdrikkelig pilsner til lange sommerkvelder. 20 liter.",
+      "price": 399,
+      "available": true
+    },
+    {
+      "id": "brew-kettle",
+      "name": "Bryggekjele 30 L",
+      "category": "Bryggeutstyr",
+      "description": "Solid rustfri bryggekjele med tappekran og tydelig literskala.",
+      "price": 1890,
+      "available": true
+    },
+    {
+      "id": "fermenter",
+      "name": "Gjæringskar 30 L",
+      "category": "Bryggeutstyr",
+      "description": "Praktisk gjæringskar med gjærlås, lokk og tappekran.",
+      "price": 349,
+      "available": true
+    },
+    {
+      "id": "hop-citra",
+      "name": "Citra humle 100 g",
+      "category": "Råvarer",
+      "description": "Pelletshumle med frisk sitrus, pasjonsfrukt og et tropisk løft.",
+      "price": 109,
+      "available": true
+    },
+    {
+      "id": "malt",
+      "name": "Pale Ale malt 5 kg",
+      "category": "Råvarer",
+      "description": "En allsidig basemalt med lett brødpreg til ditt neste hjemmebrygg.",
+      "price": 189,
+      "available": true
+    },
+    {
+      "id": "glass",
+      "name": "Smaksglass, 2-pakning",
+      "category": "Tilbehør",
+      "description": "Tulipanformede glass som gir plass til både aroma og skumkrone.",
+      "price": 249,
+      "available": true
+    }
+  ],
+  "articles": [
+    {
+      "id": "article-1",
+      "title": "Slik merker du reklameinnhold",
+      "category": "Innhold",
+      "body": "Merk samarbeid tydelig som reklame eller annonse. Plasser merkingen slik at den er synlig før følgeren åpner eller leser innholdet.",
+      "authorId": "nora",
+      "createdAt": "2026-10-29T12:24:17.678Z",
+      "updatedAt": "2026-11-16T12:24:17.678Z"
+    },
+    {
+      "id": "article-2",
+      "title": "Ta vare på humle og malt",
+      "category": "Bryggetips",
+      "body": "Oppbevar råvarer tørt, kjølig og lufttett. Humle holder best på aromaen når den skjermes fra lys og oksygen.",
+      "authorId": "marius",
+      "createdAt": "2026-11-06T12:24:17.678Z",
+      "updatedAt": "2026-11-15T12:24:17.678Z"
+    }
+  ],
+  "damageReports": [],
+  "submissions": [],
+  "tickets": [
+    {
+      "id": "ticket-1001",
+      "number": 1001,
+      "subject": "Fra korn til glass – en liten bryggereise",
+      "description": "Jeg vil lage en varm og ærlig bildeserie om mitt første brygg med Fjordglød. Demoforespørsel.",
+      "productId": "fjord-pale",
+      "ambassadorId": "emil",
+      "assigneeId": "nora",
+      "status": "in_progress",
+      "channel": "Instagram",
+      "dueDate": "2026-12-03",
+      "createdAt": "2026-11-10T12:24:17.678Z",
+      "updatedAt": "2026-11-17T12:24:17.678Z",
+      "messages": [
+        {
+          "id": "ticket-1001-message-0",
+          "authorId": "emil",
+          "body": "Hei Nora! Jeg tenker tre innlegg: bryggedagen, gjæringen og den første smaken. Hva tror du?",
+          "createdAt": "2026-11-11T12:24:17.678Z",
+          "emailStatus": "not_requested"
+        },
+        {
+          "id": "ticket-1001-message-1",
+          "authorId": "nora",
+          "body": "Det høres veldig fint ut! Vis gjerne frem råvarene og fortell hva du lærer underveis. Settet er godkjent.",
+          "createdAt": "2026-11-12T12:24:17.678Z",
+          "emailStatus": "not_requested"
+        },
+        {
+          "id": "ticket-1001-message-2",
+          "authorId": "emil",
+          "body": "Supert, bryggedagen er i boks. Jeg sender et utkast før publisering.",
+          "createdAt": "2026-11-13T12:24:17.678Z",
+          "emailStatus": "not_requested"
+        }
+      ]
+    },
+    {
+      "id": "ticket-1002",
+      "number": 1002,
+      "subject": "En enklere bryggedag med riktig utstyr",
+      "description": "En kort demonstrasjon av kjelen og mine beste tips for en ryddig bryggedag. Demoinnhold.",
+      "productId": "brew-kettle",
+      "ambassadorId": "emil",
+      "assigneeId": "nora",
+      "status": "approved",
+      "channel": "YouTube",
+      "dueDate": "2026-12-04",
+      "createdAt": "2026-11-10T12:24:17.678Z",
+      "updatedAt": "2026-11-17T12:24:17.678Z",
+      "messages": [
+        {
+          "id": "ticket-1002-message-0",
+          "authorId": "emil",
+          "body": "Kan vi vise hvordan tappekranen gjør overføringen enklere?",
+          "createdAt": "2026-11-11T12:24:17.678Z",
+          "emailStatus": "not_requested"
+        },
+        {
+          "id": "ticket-1002-message-1",
+          "authorId": "nora",
+          "body": "Ja! Forespørselen er godkjent. Husk å merke innholdet tydelig som reklame.",
+          "createdAt": "2026-11-12T12:24:17.678Z",
+          "emailStatus": "not_requested"
+        }
+      ]
+    },
+    {
+      "id": "ticket-1003",
+      "number": 1003,
+      "subject": "Humleskolen: bli kjent med Citra",
+      "description": "En kort video med fokus på aroma, oppbevaring og tørrhumling. Demoforespørsel.",
+      "productId": "hop-citra",
+      "ambassadorId": "emil",
+      "assigneeId": "nora",
+      "status": "review",
+      "channel": "TikTok",
+      "dueDate": "2026-12-05",
+      "createdAt": "2026-11-10T12:24:17.678Z",
+      "updatedAt": "2026-11-17T12:24:17.678Z",
+      "messages": [
+        {
+          "id": "ticket-1003-message-0",
+          "authorId": "emil",
+          "body": "Første utkast er klart! Jeg forklarer forskjellen på bitterhumle og aromahumle.",
+          "createdAt": "2026-11-11T12:24:17.678Z",
+          "emailStatus": "not_requested"
+        },
+        {
+          "id": "ticket-1003-message-1",
+          "authorId": "nora",
+          "body": "Fin og tydelig forklaring. Jeg ser gjennom teksten og kommer tilbake til deg.",
+          "createdAt": "2026-11-12T12:24:17.678Z",
+          "emailStatus": "not_requested"
+        }
+      ]
+    },
+    {
+      "id": "ticket-1004",
+      "number": 1004,
+      "subject": "Sommerkveld med en lys pilsner",
+      "description": "Jeg ønsker å dele en rolig bryggedag og en enkel oppskriftspresentasjon. Demoforespørsel.",
+      "productId": "kveld-pils",
+      "ambassadorId": "emil",
+      "assigneeId": "nora",
+      "status": "requested",
+      "channel": "Instagram",
+      "dueDate": "2026-12-06",
+      "createdAt": "2026-11-10T12:24:17.678Z",
+      "updatedAt": "2026-11-17T12:24:17.678Z",
+      "messages": [
+        {
+          "id": "ticket-1004-message-0",
+          "authorId": "emil",
+          "body": "Hei! Passer dette settet til et innlegg om temperaturkontroll under gjæring?",
+          "createdAt": "2026-11-11T12:24:17.678Z",
+          "emailStatus": "not_requested"
+        }
+      ]
+    },
+    {
+      "id": "ticket-1005",
+      "number": 1005,
+      "subject": "Smaksglass til bryggeklubben",
+      "description": "Bilder av glassene og en guide til aroma. Dette er en separat demokonto.",
+      "productId": "glass",
+      "ambassadorId": "sara",
+      "assigneeId": "nora",
+      "status": "requested",
+      "channel": "Blogg",
+      "dueDate": "2026-12-07",
+      "createdAt": "2026-11-10T12:24:17.678Z",
+      "updatedAt": "2026-11-17T12:24:17.678Z",
+      "messages": [
+        {
+          "id": "ticket-1005-message-0",
+          "authorId": "sara",
+          "body": "Jeg vil gjerne fotografere glassene til en enkel aromaguide.",
+          "createdAt": "2026-11-11T12:24:17.678Z",
+          "emailStatus": "not_requested"
+        }
+      ]
+    }
+  ]
+}
